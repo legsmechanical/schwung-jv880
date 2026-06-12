@@ -527,6 +527,9 @@ typedef struct {
     uint64_t perf_wall_window_ns;
     /* Thread CPU ns at start of this window */
     uint64_t perf_cpu_window_ns;
+    /* MCU sleep-fraction probe: window-start snapshots of mcu counters */
+    uint64_t perf_probe_steps0;
+    uint64_t perf_probe_sleep0;
     /* Last formatted report line (returned by get_param "perf_stats") */
     char perf_stats_buf[256];
 #endif /* JV880_PERF_STATS */
@@ -1664,11 +1667,17 @@ static void* v2_emu_thread_func(void *arg) {
                 double loops_s  = (wall_s > 0.0) ? (double)inst->perf_loop_iters  / wall_s : 0.0;
                 double sleeps_s = (wall_s > 0.0) ? (double)inst->perf_sleep_iters / wall_s : 0.0;
 
+                uint64_t probe_steps_d = inst->mcu->probe_steps - inst->perf_probe_steps0;
+                uint64_t probe_sleep_d = inst->mcu->probe_sleep_steps - inst->perf_probe_sleep0;
+                double mcu_sleep_frac = (probe_steps_d > 0)
+                    ? 100.0 * (double)probe_sleep_d / (double)probe_steps_d : 0.0;
+
                 snprintf(inst->perf_stats_buf, sizeof(inst->perf_stats_buf),
                     "JV880 perf: emu=%.1f%% resamp=%.1f%% other=%.1f%% of thread cpu"
-                    " | thread_cpu=%.1f%% wall | sleeps/s=%.0f loops/s=%.0f",
+                    " | thread_cpu=%.1f%% wall | sleeps/s=%.0f loops/s=%.0f"
+                    " | mcu_sleep=%.1f%%",
                     pct_emu, pct_resamp, pct_other,
-                    pct_cpu_wall, sleeps_s, loops_s);
+                    pct_cpu_wall, sleeps_s, loops_s, mcu_sleep_frac);
 
                 fprintf(stderr, "%s\n", inst->perf_stats_buf);
 
@@ -1695,6 +1704,8 @@ static void* v2_emu_thread_func(void *arg) {
                 inst->perf_emu_calls     = 0;
                 inst->perf_wall_window_ns = wall_now_ns;
                 inst->perf_cpu_window_ns  = cpu_now_ns;
+                inst->perf_probe_steps0   = inst->mcu->probe_steps;
+                inst->perf_probe_sleep0   = inst->mcu->probe_sleep_steps;
                 inst->perf_next_report_ns = wall_now_ns + 15000000000ULL;
             }
         }

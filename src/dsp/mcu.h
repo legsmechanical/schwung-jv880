@@ -328,6 +328,11 @@ struct MCU {
   int16_t sample_buffer[audio_buffer_size] = {0};
   int sample_write_ptr = 0;
 
+  /* Probe: fraction of emulated instruction slots spent in SLEEP
+   * (read by the plugin's perf reporting; ~free to maintain) */
+  uint64_t probe_steps = 0;
+  uint64_t probe_sleep_steps = 0;
+
   MCU();
 
   int startSC55(const uint8_t *s_rom1, const uint8_t *s_rom2,

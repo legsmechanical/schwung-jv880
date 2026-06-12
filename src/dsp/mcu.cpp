@@ -807,8 +807,11 @@ void MCU::updateSC55(const int nSamples) {
     else
       mcu.ex_ignore = 0;
 
+    probe_steps++;
     if (!mcu.sleep)
       MCU_ReadInstruction();
+    else
+      probe_sleep_steps++;
 
     mcu.cycles += 12; // FIXME: assume 12 cycles per instruction
 
