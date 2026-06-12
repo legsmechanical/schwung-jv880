@@ -370,6 +370,15 @@ struct MCU {
   uint8_t TIMER_Read(const uint32_t address);
   void TIMER_Clock(const uint64_t cycles);
 
+  // Replays the FRT counters for n skipped TIMER_Clock calls (SLEEP fast-forward).
+  void FRT_AdvanceSkipped(uint64_t n);
+
+  // Returns the earliest mcu.cycles value (a multiple of 12, strictly greater
+  // than the current mcu.cycles) at which ANY peripheral could do something
+  // observable, used to fast-forward through SLEEP. Returns UINT64_MAX if no
+  // peripheral has a bounded next event.
+  uint64_t MCU_NextEventCycles();
+
   void TIMER2_Write(const uint32_t address, const uint8_t data);
   uint8_t TIMER_Read2(const uint32_t address);
 
