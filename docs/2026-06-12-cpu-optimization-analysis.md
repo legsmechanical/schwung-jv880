@@ -38,3 +38,20 @@ The PCM/MCU time split above is reasoned from code density, not measured. Run `p
 ## Validation harness (prerequisite for #2/#4/#6/#7)
 
 Build a headless render mode: load ROMs, play a scripted MIDI sequence across a set of factory patches (including looped/sustained and velocity-switched ones), write WAV. Bit-diff (or null-test) optimized vs unoptimized output. The state writes that matter for correctness beyond audio: PCM IRQ flags and per-slot key bits the firmware reads back.
+
+---
+
+## Results addendum (2026-06-12, measured on CM5/Armbian Move — NOT stock CM4; expect proportionally larger shares there)
+
+Workload: patch 25, one sustained note. Emulator thread CPU via /proc thread sampling + JV880_PERF_STATS.
+
+| Stage | Thread CPU | Notes |
+|---|---|---|
+| Stock build | 31.1% | |
+| Phase 1: -mcpu/LTO/visibility + interrupt gate + FIFO45/pin/FTZ | 20.6% | The bulk of the win |
+| + PCM skip-inactive voices | 20.9% | Bit-exact, 28% faster in isolation on host — invisible on-device (post-LTO remainder is interpreter-dominated) |
+| + ring poll 50us→1ms | 19.9% | Wakeups 20k/s → ~800/s; CPU accounting barely moved |
+| + fixed-ratio 441/640 polyphase resampler | 16.6% | resamp bucket 24.2%→6.8% of thread; quality improved (alias −123dB vs −82dB) |
+| + MCU sleep fast-forward | 16.0% | 62% sleep fraction, next-event jumps; LTO had already cheapened per-step calls |
+
+**Conclusion: −49% total; diminishing returns reached.** Remaining ~15% ≈ PCM real work + awake-step interpretation. Further meaningful gains would require interpreter-level work (#7-class effort) for single-digit returns — not recommended. The perf-stats instrumentation (JV880_PERF_STATS) and WAV harness (tools/render_test) remain for future work.
