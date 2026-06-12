@@ -21,6 +21,9 @@
 extern "C" {
 #include "resample/libresample.h"
 }
+/* Fixed-ratio 64000->44100 polyphase resampler (replaces libresample in the
+ * v2 emu thread path; libresample left vendored/included for v1 or reference). */
+#include "resampler_fixed.h"
 
 extern "C" {
 #include "plugin_api_v1.h"
@@ -440,13 +443,19 @@ typedef struct {
     int save_slot_index;
     int load_slot_index;
 
-    /* Resampling state (libresample) */
+    /* Resampling state (libresample) - retained for v1 / reference; v2 path
+     * now uses the fixed-ratio polyphase resampler below. */
     void *resampleL;
     void *resampleR;
     float resample_in_l[4096];  /* Input buffer for resampler */
     float resample_in_r[4096];
     float resample_out_l[4096]; /* Output buffer for resampler */
     float resample_out_r[4096];
+
+    /* Fixed-ratio 64000->44100 polyphase resampler (v2 path).  Carries L+R
+     * history and persistent fractional phase so chunked input across
+     * iterations resamples correctly. */
+    ResamplerFixed rfix;
 
     /* Loading state */
     char loading_status[256];
@@ -1201,11 +1210,15 @@ static void* v2_load_thread_func(void *arg) {
     inst->ring_write = 0;
     inst->ring_read = 0;
 
-    /* Initialize high-quality resampler (66207 Hz -> 48000 Hz) */
+    /* Initialize fixed-ratio polyphase resampler (64000 Hz -> 44100 Hz,
+     * L=441 M=640).  Builds its coefficient bank once here. */
     double ratio = (double)MOVE_SAMPLE_RATE / (double)JV880_SAMPLE_RATE;
-    inst->resampleL = resample_open(1, ratio, ratio);  /* High quality */
-    inst->resampleR = resample_open(1, ratio, ratio);
-    fprintf(stderr, "JV880 v2: Resampler initialized (ratio %.4f)\n", ratio);
+    inst->resampleL = nullptr;
+    inst->resampleR = nullptr;
+    ResamplerFixed_init(&inst->rfix);
+    fprintf(stderr, "JV880 v2: Fixed-ratio resampler initialized (ratio %.4f, "
+                    "L=%d M=%d, %d taps/phase)\n",
+            ratio, RF_L, RF_M, RF_TAPS_PER_PHASE);
 
     fprintf(stderr, "JV880 v2: Pre-filling buffer...\n");
     snprintf(inst->loading_status, sizeof(inst->loading_status), "Preparing audio...");
@@ -1221,13 +1234,10 @@ static void* v2_load_thread_func(void *arg) {
                 inst->resample_in_r[j] = (float)inst->mcu->sample_buffer[j * 2 + 1] / 32768.0f;
             }
 
-            /* Resample */
-            int inUsedL = 0, inUsedR = 0;
-            int outL = resample_process(inst->resampleL, ratio, inst->resample_in_l, in_samples,
-                                        0, &inUsedL, inst->resample_out_l, 4096);
-            int outR = resample_process(inst->resampleR, ratio, inst->resample_in_r, in_samples,
-                                        0, &inUsedR, inst->resample_out_r, 4096);
-            int out_samples = (outL < outR) ? outL : outR;
+            /* Resample (fixed-ratio polyphase, L+R together) */
+            int out_samples = ResamplerFixed_process(&inst->rfix,
+                                  inst->resample_in_l, inst->resample_in_r, in_samples,
+                                  inst->resample_out_l, inst->resample_out_r);
 
             /* Copy to ring buffer */
             for (int j = 0; j < out_samples && inst->ring_write < AUDIO_RING_SIZE / 2; j++) {
@@ -1509,8 +1519,6 @@ static void* v2_emu_thread_func(void *arg) {
     v2_emu_thread_setup();
     fprintf(stderr, "JV880 v2: Emulation thread started\n");
 
-    const double ratio = (double)MOVE_SAMPLE_RATE / (double)JV880_SAMPLE_RATE;
-
 #if JV880_PERF_STATS
     /* Helper lambda-like macro: read ns from a timespec */
 #define TS_NS(ts) ((uint64_t)(ts).tv_sec * 1000000000ULL + (uint64_t)(ts).tv_nsec)
@@ -1597,14 +1605,11 @@ static void* v2_emu_thread_func(void *arg) {
                 inst->resample_in_r[i] = (float)inst->mcu->sample_buffer[i * 2 + 1] / 32768.0f;
             }
 
-            /* Resample using high-quality polyphase filter */
-            int inUsedL = 0, inUsedR = 0;
-            int outL = resample_process(inst->resampleL, ratio, inst->resample_in_l, in_samples,
-                                        0, &inUsedL, inst->resample_out_l, 4096);
-            int outR = resample_process(inst->resampleR, ratio, inst->resample_in_r, in_samples,
-                                        0, &inUsedR, inst->resample_out_r, 4096);
-
-            int out_samples = (outL < outR) ? outL : outR;
+            /* Resample using fixed-ratio polyphase filter (L+R together,
+             * persistent phase state across chunk boundaries). */
+            int out_samples = ResamplerFixed_process(&inst->rfix,
+                                  inst->resample_in_l, inst->resample_in_r, in_samples,
+                                  inst->resample_out_l, inst->resample_out_r);
 
             /* Batch copy to ring buffer with single lock */
             if (out_samples > 0) {
