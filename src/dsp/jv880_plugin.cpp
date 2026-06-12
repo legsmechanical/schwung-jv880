@@ -1513,10 +1513,17 @@ static void* v2_emu_thread_func(void *arg) {
             inst->map_sysex_len = 0;
         }
 
-        /* Check if we need more audio */
+        /* Check if we need more audio.
+         * Sleep ~1ms when the ring is full: the consumer drains 128 frames
+         * per ~2.9ms, so 64 frames free takes ~1.45ms.  A 50us poll here
+         * meant ~20k wakeups/s of syscall+scheduler overhead on the A72,
+         * which dominated the thread's CPU once emulation got cheaper.
+         * Latency is unaffected: the ring is already at max fill when we
+         * sleep, and 1ms of drain (~44 frames) is refilled in well under
+         * a millisecond of emulation. */
         int free_space = v2_ring_free(inst);
         if (free_space < 64) {
-            usleep(50);
+            usleep(1000);
             continue;
         }
 
