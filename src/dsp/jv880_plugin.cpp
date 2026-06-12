@@ -1439,9 +1439,47 @@ static int v2_ring_free(jv880_instance_t *inst) {
     return AUDIO_RING_SIZE - 1 - v2_ring_available(inst);
 }
 
+/* v2: Per-thread performance setup for the emulator thread.
+ * - Pins to cores 0-2 (core 3 is reserved for the SPI audio callback).
+ * - Requests SCHED_FIFO 45 (below MoveOriginal audio threads at FIFO 70,
+ *   well below the SPI thread at FIFO 90). EPERM is non-fatal.
+ * - Flushes aarch64 denormals to zero via FPCR bit 24.
+ */
+static void v2_emu_thread_setup(void) {
+#ifdef __linux__
+    /* CPU affinity: cores 0, 1, 2 */
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    CPU_SET(1, &cpuset);
+    CPU_SET(2, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+        fprintf(stderr, "JV880 v2: Failed to set CPU affinity: %s\n", strerror(errno));
+    }
+
+    /* Real-time scheduling: SCHED_FIFO priority 45 */
+    struct sched_param sp;
+    sp.sched_priority = 45;
+    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (rc != 0) {
+        fprintf(stderr, "JV880 v2: Could not set SCHED_FIFO 45 (%s) — continuing with default scheduling\n",
+                strerror(rc));
+    }
+#endif /* __linux__ */
+
+#ifdef __aarch64__
+    /* Flush-to-zero for float32/float64 denormals (FPCR bit 24) */
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr |= (1ull << 24);
+    __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr));
+#endif /* __aarch64__ */
+}
+
 /* v2: Emulator thread */
 static void* v2_emu_thread_func(void *arg) {
     jv880_instance_t *inst = (jv880_instance_t*)arg;
+    v2_emu_thread_setup();
     fprintf(stderr, "JV880 v2: Emulation thread started\n");
 
     const double ratio = (double)MOVE_SAMPLE_RATE / (double)JV880_SAMPLE_RATE;
@@ -3654,8 +3692,9 @@ static plugin_api_v2_t jv880_api_v2 = {
     v2_render_block
 };
 
-/* v2 Entry Point */
-extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
+/* v2 Entry Point (default visibility required: built with -fvisibility=hidden) */
+extern "C" __attribute__((visibility("default")))
+plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
     (void)host;
     jv_debug("[JV880] v2 API initialized\n");
     return &jv880_api_v2;
