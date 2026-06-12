@@ -217,6 +217,7 @@ struct mcu_t {
   uint8_t interrupt_pending[INTERRUPT_SOURCE_MAX];
   uint8_t trapa_pending[16];
   uint64_t cycles;
+  uint8_t interrupt_pending_any; // 1 = scan needed; cleared by Handle when nothing pending
 };
 
 enum {
@@ -550,14 +551,18 @@ struct MCU {
   inline void MCU_Interrupt_SetRequest(const uint32_t interrupt,
                                        const uint32_t value) {
     mcu.interrupt_pending[interrupt] = value;
+    if (value)
+      mcu.interrupt_pending_any = 1;
   }
 
   inline void MCU_Interrupt_Exception(const uint32_t exception) {
     mcu.exception_pending = exception;
+    mcu.interrupt_pending_any = 1; // exception may need servicing
   }
 
   inline void MCU_Interrupt_TRAPA(const uint32_t vector) {
     mcu.trapa_pending[vector] = 1;
+    mcu.interrupt_pending_any = 1;
   }
 
   inline void MCU_Interrupt_StartVector(const uint32_t vector,

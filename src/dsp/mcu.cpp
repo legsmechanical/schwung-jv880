@@ -396,6 +396,7 @@ void MCU::MCU_Reset() {
   mcu.pc = reset_address & 0xffff;
 
   mcu.exception_pending = -1;
+  mcu.interrupt_pending_any = 1; // ensure first scan always runs
 
   MCU_DeviceReset();
 }
@@ -484,12 +485,24 @@ void MCU::MCU_EncoderTrigger(const int dir) {
 }
 
 void MCU::MCU_Interrupt_Handle() {
+  // Fast path: skip the scan entirely when provably nothing is pending.
+  // The flag is set by every code path that can make an interrupt/exception
+  // become pending (SetRequest with value!=0, Exception, TRAPA).  It is
+  // cleared here only when the scan observes zero pending requests across ALL
+  // sources, including masked ones — so a pending-but-masked interrupt keeps
+  // the flag set and will be re-checked whenever the firmware lowers the mask.
+  if (!mcu.interrupt_pending_any)
+    return;
+
   uint32_t i;
+  bool any_pending = false; // tracks whether anything remains pending after scan
+
   for (i = 0; i <= 8; i++) {
     if (mcu.trapa_pending[i]) {
+      any_pending = true; // there are pending trapas (this one and possibly more)
       mcu.trapa_pending[i] = 0;
       MCU_Interrupt_StartVector(VECTOR_TRAPA_0 + i, -1);
-      return;
+      return; // flag stays set — remaining trapas or interrupts may still be pending
     }
   }
   uint32_t mask = (mcu.sr >> 8) & 7;
@@ -498,6 +511,9 @@ void MCU::MCU_Interrupt_Handle() {
     int32_t level = 0;
     if (!mcu.interrupt_pending[i])
       continue;
+    // At least one interrupt_pending slot is set — even if ultimately masked,
+    // we must keep any_pending true so we re-scan after a mask change.
+    any_pending = true;
     switch (i) {
     case INTERRUPT_SOURCE_IRQ0:
       if ((dev_register[DEV_P1CR] & 0x20) == 0)
@@ -577,9 +593,15 @@ void MCU::MCU_Interrupt_Handle() {
 
     if ((int32_t)mask < level) {
       MCU_Interrupt_StartVector(vector, level);
-      return;
+      return; // flag stays set — remaining pending interrupts need future scans
     }
   }
+
+  // Scan completed without dispatching anything.  Clear flag only when no
+  // pending sources were observed; if any source is pending-but-masked we must
+  // keep the flag so we re-scan when the mask drops (no new SetRequest fires).
+  if (!any_pending)
+    mcu.interrupt_pending_any = 0;
 }
 
 void MCU::TIMER_Reset() {
