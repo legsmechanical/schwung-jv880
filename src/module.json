@@ -90,8 +90,10 @@
                         "macro_resonance",
                         "macro_attack",
                         "macro_decay",
+                        "macro_sustain",
                         "macro_release",
                         "macro_tvf_env_depth",
+                        "macro_lfo_depth",
                         "nvram_patchCommon_reverblevel",
                         "nvram_patchCommon_choruslevel",
                         "mode",
@@ -104,10 +106,10 @@
                         "macro_resonance",
                         "macro_attack",
                         "macro_decay",
+                        "macro_sustain",
                         "macro_release",
                         "macro_tvf_env_depth",
-                        "nvram_patchCommon_reverblevel",
-                        "nvram_patchCommon_choruslevel"
+                        "macro_lfo_depth"
                     ]
                 }
             }
@@ -185,6 +187,14 @@
                 "default": 0
             },
             {
+                "key": "macro_sustain",
+                "name": "Sustain",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1
+            },
+            {
                 "key": "macro_release",
                 "name": "Release",
                 "type": "int",
@@ -201,6 +211,14 @@
                 "max": 63,
                 "step": 1,
                 "default": 0
+            },
+            {
+                "key": "macro_lfo_depth",
+                "name": "LFO Depth",
+                "type": "int",
+                "min": -63,
+                "max": 63,
+                "step": 1
             },
             {
                 "key": "nvram_patchCommon_reverblevel",

@@ -366,8 +366,10 @@ static const macro_def_t MACRO_DEFS[] = {
     {"resonance",     "Resonance",   "resonance",         0, 127},
     {"attack",        "Attack",      "tvaenvtime1",       0, 127},
     {"decay",         "Decay",       "tvaenvtime2",       0, 127},
+    {"sustain",       "Sustain",     "tvaenvlevel3",      0, 127},
     {"release",       "Release",     "tvaenvtime4",       0, 127},
-    {"tvf_env_depth", "TVF Env",     "tvfenvdepth",     -63,  63},
+    {"tvf_env_depth", "Filter Env",  "tvfenvdepth",     -63,  63},
+    {"lfo_depth",     "LFO Depth",   "lfo1tvfdepth",    -63,  63},
 };
 #define NUM_MACROS (sizeof(MACRO_DEFS) / sizeof(MACRO_DEFS[0]))
 
@@ -585,6 +587,8 @@ typedef struct {
     int macro_decay;         /* offset for tvaenvtime2 */
     int macro_release;       /* offset for tvaenvtime4 */
     int macro_tvf_env_depth; /* offset for tvfenvdepth */
+    int macro_sustain;       /* offset for tvaenvlevel3 */
+    int macro_lfo_depth;     /* offset for lfo1tvfdepth */
 
 #if JV880_PERF_STATS
     /* Per-window accumulators (reset every 15-second report window) */
@@ -1086,6 +1090,8 @@ static void v2_select_patch(jv880_instance_t *inst, int global_index) {
     inst->macro_decay = 0;
     inst->macro_release = 0;
     inst->macro_tvf_env_depth = 0;
+    inst->macro_sustain = 0;
+    inst->macro_lfo_depth = 0;
 
     jv_debug("[v2_select_patch] Complete\n");
 }
@@ -1960,6 +1966,8 @@ static int* v2_macro_offset_slot(jv880_instance_t *inst, const macro_def_t *m) {
     if (strcmp(m->key, "decay") == 0)         return &inst->macro_decay;
     if (strcmp(m->key, "release") == 0)       return &inst->macro_release;
     if (strcmp(m->key, "tvf_env_depth") == 0) return &inst->macro_tvf_env_depth;
+    if (strcmp(m->key, "sustain") == 0)       return &inst->macro_sustain;
+    if (strcmp(m->key, "lfo_depth") == 0)     return &inst->macro_lfo_depth;
     return NULL;
 }
 
@@ -3684,22 +3692,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     "\"count_param\":\"preset_count\","
                     "\"name_param\":\"preset_name\","
                     "\"children\":\"patch_main\","
-                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_release\",\"macro_tvf_env_depth\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_choruslevel\"],"
-                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Rel\",\"FEv\",\"Rev\",\"Cho\"],"
+                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_sustain\",\"macro_release\",\"macro_tvf_env_depth\",\"macro_lfo_depth\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Env\",\"LFO\"],"
                     "\"params\":[]"
                 "},"
                 "\"patch_main\":{"
                     "\"label\":\"Patch\","
                     "\"children\":null,"
-                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_release\",\"macro_tvf_env_depth\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_choruslevel\"],"
-                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Rel\",\"FEv\",\"Rev\",\"Cho\"],"
+                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_sustain\",\"macro_release\",\"macro_tvf_env_depth\",\"macro_lfo_depth\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Env\",\"LFO\"],"
                     "\"params\":["
                         "{\"key\":\"macro_cutoff\",\"label\":\"Cutoff\"},"
                         "{\"key\":\"macro_resonance\",\"label\":\"Resonance\"},"
                         "{\"key\":\"macro_attack\",\"label\":\"Attack\"},"
                         "{\"key\":\"macro_decay\",\"label\":\"Decay\"},"
+                        "{\"key\":\"macro_sustain\",\"label\":\"Sustain\"},"
                         "{\"key\":\"macro_release\",\"label\":\"Release\"},"
                         "{\"key\":\"macro_tvf_env_depth\",\"label\":\"Filter Env\"},"
+                        "{\"key\":\"macro_lfo_depth\",\"label\":\"LFO Depth\"},"
                         "{\"key\":\"nvram_patchCommon_reverblevel\",\"label\":\"Reverb\"},"
                         "{\"key\":\"nvram_patchCommon_choruslevel\",\"label\":\"Chorus\"},"
                         "{\"level\":\"tone_selector\",\"label\":\"Edit Tones\"},"
@@ -3710,8 +3720,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 "\"patch_common\":{"
                     "\"label\":\"Common\","
                     "\"children\":null,"
-                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_release\",\"macro_tvf_env_depth\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_choruslevel\"],"
-                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Rel\",\"FEv\",\"Rev\",\"Cho\"],"
+                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_sustain\",\"macro_release\",\"macro_tvf_env_depth\",\"macro_lfo_depth\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Env\",\"LFO\"],"
                     "\"params\":["
                         "{\"key\":\"nvram_patchCommon_patchlevel\",\"label\":\"Patch Level\"},"
                         "{\"key\":\"nvram_patchCommon_patchpan\",\"label\":\"Patch Pan\"},"
@@ -3818,7 +3828,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"macro_attack\",\"name\":\"Attack\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
             "{\"key\":\"macro_decay\",\"name\":\"Decay\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
             "{\"key\":\"macro_release\",\"name\":\"Release\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
-            "{\"key\":\"macro_tvf_env_depth\",\"name\":\"TVF Env\",\"type\":\"int\",\"min\":-63,\"max\":63,\"step\":1},"
+            "{\"key\":\"macro_sustain\",\"name\":\"Sustain\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_tvf_env_depth\",\"name\":\"Filter Env\",\"type\":\"int\",\"min\":-63,\"max\":63,\"step\":1},"
+            "{\"key\":\"macro_lfo_depth\",\"name\":\"LFO Depth\",\"type\":\"int\",\"min\":-63,\"max\":63,\"step\":1},"
             /* Patch common params */
             "{\"key\":\"nvram_patchCommon_patchlevel\",\"name\":\"Patch Level\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"nvram_patchCommon_patchpan\",\"name\":\"Patch Pan\",\"type\":\"int\",\"min\":0,\"max\":127},"
