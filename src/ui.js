@@ -46,12 +46,6 @@ let menuScroll = 0;         // Scroll offset for long menus
 // For child selectors (tones/parts)
 let selectedChildIndex = 0;
 
-// Persisted tone index for tone-section sub-levels (Wave/Pitch/Filter/...).
-// Set when a tone is chosen in the tone_selector level; tone_section levels
-// resolve their nvram_tone_<N>_<param> keys against this index so the section
-// pages edit the SELECTED tone even though they are separate levels.
-let selectedToneIndex = 0;
-
 // For list browsers (presets, performances)
 let listIndex = 0;
 let listCount = 0;
@@ -199,14 +193,13 @@ function getParamMeta(key) {
 }
 
 function getFullParamKey(key) {
-    // Handle child prefix (e.g., nvram_tone_0_cutofffrequency)
+    // Handle child prefix (e.g., part_selector -> sram_part_0_partlevel).
+    // NOTE: per-tone editing now uses EXPLICIT per-tone levels whose param keys
+    // are already fully qualified (nvram_tone_<n>_<param>), matching what the
+    // platform's shadow_ui.js renderer requires in a chain slot. No tone_section
+    // key rewriting is done here.
     if (currentLevel.child_prefix) {
         return currentLevel.child_prefix + selectedChildIndex + '_' + key;
-    }
-    // Tone-section sub-levels (Wave/Pitch/Filter/Amp/LFO/FX) resolve against the
-    // persisted selected tone index so they edit the tone chosen one level up.
-    if (currentLevel.tone_section) {
-        return currentLevel.tone_prefix + selectedToneIndex + '_' + key;
     }
     return key;
 }
@@ -358,10 +351,10 @@ function handleChildSelectorInput(cc, value) {
         needsRedraw = true;
     } else if (cc === CC_JOG_CLICK) {
         const item = params[menuIndex];
-        // Navigation item (e.g. a tone section page): persist the selected tone
-        // so the sub-level edits this tone, then descend.
+        // Navigation item (e.g. a tone or section page): descend into it. Target
+        // levels are explicit and carry fully-qualified keys, so no per-level
+        // tone state needs to be persisted.
         if (item && typeof item === 'object' && item.level) {
-            selectedToneIndex = selectedChildIndex;
             announceView(item.label || item.level);
             navigateToLevel(item.level);
             return;

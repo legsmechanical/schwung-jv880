@@ -190,66 +190,92 @@ Attack, Decay, Release, TVF Env macros + Reverb, Chorus levels). Default macro m
 
 ## Phase B — Tone editing (nested hierarchy + value formatting + save)
 
-All tone params are absolute per-tone `nvram_tone_<N>_<param>` keys (N=0..3).
-Navigation: from a patch, click the jog to open the patch edit menu (`patch_main`),
-choose **Edit Tones**. The hierarchy is max depth 3: root → Tone N → section.
+**Renderer note (READ FIRST).** When the module runs in a Signal Chain slot, the *platform's*
+`shadow_ui.js` renders these menus — NOT the module's own `src/ui.js`. That renderer keys every
+param entry as `synth:<key>`, has **no** `tone_section`/`tone_prefix` support, and does **not**
+carry a `child_prefix` context into a *navigated* sub-level. Therefore per-tone editing uses
+**explicit per-tone levels** (`tone1`..`tone4`, and `tone1_wave`..`tone4_fx`) whose param entries
+are **fully-qualified** `nvram_tone_<N>_<param>` keys (N=0..3), each registered 1:1 in
+`chain_params`. This is the dx7 "operators written out explicitly" pattern. (The previous build
+invented `tone_section`/`tone_prefix` + a single shared selected-tone index, which the chain
+renderer ignored — hence no values, no editing, dead knobs, broken Back.)
+
+Navigation: from a patch, click the jog to open the patch edit menu (`patch_main`), choose
+**Edit Tones** (`tone_selector`) → **Tone N** → section. Max depth: root → Tone N → section.
 
 ### 1. Tone selection
 
-1. **Tone tabs.** In **Edit Tones** (`tone_selector`), Left/Right switch the selected tone
-   (Tone 1–4). The header tabs highlight the active tone. The `toneswitch` row at the top
-   shows the tone's on/off state (Off/On, not 0/1); click it to toggle and confirm the tone
-   mutes/unmutes audibly.
-2. **Tone persists into sections.** Select Tone 3, open **Filter**, edit Cutoff — confirm
-   only Tone 3's filter changes (Tones 1/2/4 unaffected). Back out, select Tone 1, open
-   **Filter** again — it now edits Tone 1. (Section pages resolve against the persisted
-   selected-tone index.)
+1. **Tone menu.** In **Edit Tones** (`tone_selector`), the four entries **Tone 1–4** each
+   navigate into a distinct per-tone level. There is no "active tone tab" / Left-Right tone
+   switching — each tone is its own explicit branch.
+2. **Tone Switch.** Each **Tone N** menu has a `Tone Switch` row showing **Off/On** (not 0/1);
+   click to toggle and confirm the tone mutes/unmutes audibly.
+3. **Tones are independent.** Open **Tone 3 → Filter**, edit Cutoff — only Tone 3's filter
+   changes (Tones 1/2/4 unaffected). Back out, open **Tone 1 → Filter** — it edits Tone 1.
 
-### 2. Knob row follows the selected tone (every level)
+### 2. Knob row follows the tone (every per-tone level)
 
-3. **Knob row is live on the selector and every section.** Knobs map to:
-   Cut(`cutofffrequency`) Res(`resonance`) Atk(`tvaenvtime1`) Dcy(`tvaenvtime2`)
-   Sus(`tvaenvlevel3`) Rel(`tvaenvtime4`) Lvl(`level`) Pan(`pan`). On the tone selector AND
-   inside Wave/Pitch/Filter/Amp/LFO/FX, turning each knob must change the SELECTED tone's
-   corresponding param, audibly. Switch tones, repeat — the same knobs now drive the new tone.
+4. **Knob row is live on each Tone N menu and every section under it.** Knobs map to (tone N,
+   0-indexed): Cut(`nvram_tone_N_cutofffrequency`) Res(`…_resonance`) Atk(`…_tvaenvtime1`)
+   Dcy(`…_tvaenvtime2`) Sus(`…_tvaenvlevel3`) Rel(`…_tvaenvtime4`) Lvl(`…_level`) Pan(`…_pan`).
+   Inside Tone N and its Wave/Pitch/Filter/Amp/LFO/FX sublevels, turning each knob changes that
+   tone's param audibly. Open a different Tone — the knobs now drive that tone.
 
 ### 3. Sections edit audibly
 
-4. **Wave.** wavegroup (enum INT-A/INT-B/EXP-A/EXP-B), wavenumber, fxmswitch (Off/On),
+5. **Wave.** wavegroup (enum INT-A/INT-B/EXP-A/EXP-B), wavenumber, fxmswitch (Off/On),
    fxmdepth, toneswitch. Changing wavenumber changes the sampled waveform.
-5. **Pitch.** coarse (signed, centered), fine (signed), keyfollow, pitch env depth+T1–4/L1–4.
+6. **Pitch.** coarse, fine, keyfollow, random pitch, pitch env depth + T1–4/L1–4.
    Coarse ±N audibly transposes the tone.
-6. **Filter.** mode (Off/LPF/HPF enum), cutoff, resonance, keyfollow, reso mode, TVF env
-   depth (signed) + velo (signed) + T1–4/L1–4. LPF cutoff sweep is audible; HPF thins the low end.
-7. **Amp.** level, pan, velo sense (signed)/curve, TVA env T1–4/L1–4, tone delay mode (enum
-   Normal/Hold/Play-Mate/Clock)/time. Attack/Release changes shape the envelope audibly.
-8. **LFO 1 / LFO 2.** form (TRI/SIN/SAW/SQU/RND1/RND2 enum), rate, delay, fade, offset, sync
-   (LFO1 only), pitch/TVF/TVA depths (signed). Raising LFO1 pitch depth introduces vibrato.
-9. **FX Sends.** drylevel, reverbsendlevel, chorussendlevel — raising reverb send increases
-   the tone's reverb tail.
+7. **Filter.** mode (Off/LPF/HPF enum), cutoff, resonance, keyfollow, reso mode, TVF env
+   depth + velo + T1–4/L1–4. LPF cutoff sweep is audible; HPF thins the low end.
+8. **Amp.** level, pan, level/pan keyfollow, velo sense/curve, TVA env T1–4/L1–4, tone delay
+   mode (enum Normal/Hold/Play-Mate/Clock)/time. Attack/Release changes shape the envelope.
+9. **LFO 1 / LFO 2.** form (TRI/SIN/SAW/SQU/RND1/RND2 enum), rate, delay, fade, offset (LFO1),
+   sync (LFO1 only), pitch/TVF/TVA depths. Raising LFO1 pitch depth introduces vibrato.
+10. **FX Sends.** drylevel, reverbsendlevel, chorussendlevel — raising reverb send increases
+    the tone's reverb tail.
 
-### 4. Enum / signed value display
+### 4. Enum / value display
 
-10. **Enums show names, not numbers.** Verify: filter mode reads **Off/LPF/HPF**; LFO form
+11. **Enums show names, not numbers.** Verify: filter mode reads **Off/LPF/HPF**; LFO form
     reads **TRI/SIN/SAW/SQU/RND1/RND2**; wave group reads **INT-A/…**; on/off switches read
-    **Off/On**; delay mode reads its names. None display a bare integer.
-11. **Signed params centered.** Pitch coarse/fine, env depths, LFO depths, velo senses show a
-    sign (e.g. `+12`, `-7`, `0`). Pan shows **C / Lnn / Rnn** (center/left/right), not 0–127.
+    **Off/On**; delay mode reads its names. None display a bare integer. (The DSP returns the
+    numeric index; the platform renderer maps it to the label via the `options` array.)
+12. **Signed values show their sign.** Pitch coarse/fine, env depths, LFO depths, and velo
+    senses display the correctly-signed integer (e.g. `-7`, `0`, `12`), because the DSP's
+    `get_param` returns a signed value for these keys.
+    **Known cosmetic limitation:** the chain renderer does NOT honor a bare `display` metadata
+    field (it only reads `display_unit`/`display_format`/`display_value_type`). So pan renders
+    as a signed integer (`-64`..`63`) rather than **C / Lnn / Rnn**, and signed params show no
+    explicit leading `+`. Values are correct and editable; only the cosmetic L/R/± skin is
+    absent in chain context. (Module-standalone `src/ui.js` can still apply these.)
 
 ### 5. Save to slot + reload round-trip
 
-12. **Save flow.** From the patch edit menu choose **Save to Slot** (`save_slot`). The list
+13. **Save flow.** From the patch edit menu choose **Save to Slot** (`save_slot`). The list
     shows all 64 user slots with their stored names (or `(empty)`); current names render as
     `NN: NAME`. Select a slot and confirm — the working patch (including all tone edits and
-    knob-row changes) is written via `do_save_to_slot`; the UI returns to the patch screen.
-13. **Reload round-trip.** Load the slot just saved (User patch load path). Re-open the edited
+    knob-row changes) is written via `do_save_to_slot`; the UI returns to the patch screen
+    (`navigate_to: "patch"`). The `save_slot`, `expansions`, and `load_expansion` levels use the
+    renderer's supported `items_param`/`select_param`/`navigate_to` dynamic-list mechanism.
+14. **Reload round-trip.** Load the slot just saved (User patch load path). Re-open the edited
     section — the edited values persist. Edit a tone, save to a different slot, reload the
     *original* preset — the original (un-edited) values reappear (edits only persist in saved
     slots).
 
-### 6. Screen-reader announcements
+### 6. Back navigation
 
-14. **Announcements fire.** Entering a level logs `[view] <label>`; selecting a param to edit
+15. **Back exits every sublevel.** From `tone3_filter`, Back returns to `tone3`; Back again to
+    `tone_selector`; Back again to `patch_main`; Back again to the patch browser. The renderer
+    discovers parents by reverse-scanning levels for one whose `params[].level` points at the
+    current level — every per-tone level is reachable from exactly one parent, so Back is
+    unambiguous at every depth. (The old build's `tone_section` levels were unreachable-by-Back
+    because no parent referenced them as a `level` nav target with a live child context.)
+
+### 7. Screen-reader announcements
+
+16. **Announcements fire.** Entering a level logs `[view] <label>`; selecting a param to edit
     logs `[item] <name>: <value>` with the formatted (enum/signed) value. Confirm in the
     console that level changes and edit-entry both announce. (No dedicated TTS channel exists
     yet; these are the named hook points for a future screen-reader layer.)
