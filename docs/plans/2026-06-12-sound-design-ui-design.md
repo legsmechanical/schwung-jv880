@@ -105,7 +105,13 @@ Design sketch (needs one investigation task at implementation start):
 
 ---
 
-## Phase D — Clones (shared-instance multi-timbral slots)
+## Phase D — Clones (DEFERRED pending audio-routing investigation)
+
+**Status (2026-06-13):** Deferred by Josh until we test what per-clone audio routing would take. The control-plane design below stands, but clones-without-separate-audio aren't worth shipping; the gate is the investigation:
+
+**Per-part audio bus investigation (gate for this phase):** the hardware mixes all parts to one stereo pair, but the EMULATOR owns the mixer — per-voice accumulation happens in pcm.cpp. If the firmware's voice-allocation state (slot → part mapping) can be read from emulated RAM/registers, the voice loop could accumulate into per-part stereo buses, giving each clone slot its own audio (beyond what real hardware could do). Tasks: locate the firmware's voice-allocation table (RAM dump diffing while keying known parts), prototype slot→part tagging in the PCM mix, measure CPU cost of N buses, and define how clone render_blocks pull their bus. If the mapping can't be recovered reliably, clones stay deferred.
+
+### Original control-plane design (kept for when the gate passes)
 
 **Requirement (Josh):** schwung's MIDI routing is inflexible; want clone modules loadable in other chain slots that share ONE emulator instance — each clone bound to its own part: unique MIDI channel, preset, params.
 
