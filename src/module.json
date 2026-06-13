@@ -1,214 +1,225 @@
 {
-  "id": "minijv",
-  "name": "Mini-JV",
-  "abbrev": "JV",
-  "version": "0.4.12",
-  "description": "ROM-based PCM rompler emulator",
-  "author": "nukeykt/giulioz (port: charlesvestal)",
-  "license": "Non-commercial",
-  "ui": "ui.js",
-  "dsp": "dsp.so",
-  "api_version": 2,
-  "raw_ui": true,
-  "raw_midi": true,
-  "standalone": false,
-  "assets": {
-    "path": "roms",
-    "label": "ROMs",
-    "extensions": [
-      ".bin",
-      ".rom"
-    ],
-    "allowFolders": true,
-    "description": "Requires JV-880 v1.0.0 ROM files",
-    "hint": "The plugin requires the v1.0.0 ROMs. Version 1.0.1 will NOT work.",
-    "hint_url": "https://github.com/charlesvestal/schwung-jv880",
-    "hint_url_label": "Read more",
-    "files": [
-      {
-        "filename": "jv880_rom1.bin",
-        "label": "CPU ROM",
-        "size": 32768,
-        "crc32": "B3D611B1",
-        "required": true
-      },
-      {
-        "filename": "jv880_rom2.bin",
-        "label": "Patch ROM",
-        "size": 262144,
-        "crc32": "B266EFE9",
-        "required": true
-      },
-      {
-        "filename": "jv880_waverom1.bin",
-        "label": "Waveform ROM 1",
-        "size": 2097152,
-        "crc32": "1348C0DC",
-        "required": true
-      },
-      {
-        "filename": "jv880_waverom2.bin",
-        "label": "Waveform ROM 2",
-        "size": 2097152,
-        "crc32": "D55FCF90",
-        "required": true
-      },
-      {
-        "filename": "jv880_nvram.bin",
-        "label": "NVRAM (user patches)",
-        "size": 32768,
-        "required": true
-      }
-    ],
-    "folders": [
-      {
-        "path": "expansions",
-        "label": "Expansion ROMs",
-        "description": "SR-JV80 expansion cards (8MB or 2MB .bin files)",
-        "extensions": [".bin", ".BIN"],
-        "required": false
-      }
-    ]
-  },
-  "capabilities": {
-    "audio_out": true,
-    "audio_in": false,
-    "midi_in": true,
-    "midi_out": false,
-    "midi_channels": 16,
-    "chainable": true,
-    "component_type": "sound_generator",
-    "ui_hierarchy": {
-      "levels": {
-        "root": {
-          "name": "Mini-JV",
-          "params": [
-            "mode",
-            "preset",
-            "performance",
-            "octave_transpose"
-          ],
-          "knobs": [
-            "macro_cutoff",
-            "macro_resonance",
-            "macro_attack",
-            "macro_decay",
-            "macro_release",
-            "macro_tvf_env_depth",
-            "nvram_patchCommon_reverblevel",
-            "nvram_patchCommon_choruslevel"
-          ]
-        }
-      }
-    },
-    "default_forward_channel": 1,
-    "chain_params": [
-      {
-        "key": "mode",
-        "name": "Mode",
-        "type": "enum",
-        "options": [
-          "Patch",
-          "Performance"
+    "id": "minijv",
+    "name": "Mini-JV",
+    "abbrev": "JV",
+    "version": "0.4.12",
+    "description": "ROM-based PCM rompler emulator",
+    "author": "nukeykt/giulioz (port: charlesvestal)",
+    "license": "Non-commercial",
+    "ui": "ui.js",
+    "dsp": "dsp.so",
+    "api_version": 2,
+    "raw_ui": true,
+    "raw_midi": true,
+    "standalone": false,
+    "assets": {
+        "path": "roms",
+        "label": "ROMs",
+        "extensions": [
+            ".bin",
+            ".rom"
         ],
-        "default": 0
-      },
-      {
-        "key": "preset",
-        "name": "Preset",
-        "type": "int",
-        "min": 0,
-        "max_param": "preset_count",
-        "default": 0
-      },
-      {
-        "key": "performance",
-        "name": "Performance",
-        "type": "int",
-        "min": 0,
-        "max": 47,
-        "default": 0
-      },
-      {
-        "key": "octave_transpose",
-        "name": "Octave",
-        "type": "int",
-        "min": -4,
-        "max": 4,
-        "default": 0
-      },
-      {
-        "key": "macro_cutoff",
-        "name": "Cutoff",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "macro_resonance",
-        "name": "Resonance",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "macro_attack",
-        "name": "Attack",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "macro_decay",
-        "name": "Decay",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "macro_release",
-        "name": "Release",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "macro_tvf_env_depth",
-        "name": "TVF Env",
-        "type": "int",
-        "min": -63,
-        "max": 63,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "nvram_patchCommon_reverblevel",
-        "name": "Reverb",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      },
-      {
-        "key": "nvram_patchCommon_choruslevel",
-        "name": "Chorus",
-        "type": "int",
-        "min": 0,
-        "max": 127,
-        "step": 1,
-        "default": 0
-      }
-    ]
-  }
+        "allowFolders": true,
+        "description": "Requires JV-880 v1.0.0 ROM files",
+        "hint": "The plugin requires the v1.0.0 ROMs. Version 1.0.1 will NOT work.",
+        "hint_url": "https://github.com/charlesvestal/schwung-jv880",
+        "hint_url_label": "Read more",
+        "files": [
+            {
+                "filename": "jv880_rom1.bin",
+                "label": "CPU ROM",
+                "size": 32768,
+                "crc32": "B3D611B1",
+                "required": true
+            },
+            {
+                "filename": "jv880_rom2.bin",
+                "label": "Patch ROM",
+                "size": 262144,
+                "crc32": "B266EFE9",
+                "required": true
+            },
+            {
+                "filename": "jv880_waverom1.bin",
+                "label": "Waveform ROM 1",
+                "size": 2097152,
+                "crc32": "1348C0DC",
+                "required": true
+            },
+            {
+                "filename": "jv880_waverom2.bin",
+                "label": "Waveform ROM 2",
+                "size": 2097152,
+                "crc32": "D55FCF90",
+                "required": true
+            },
+            {
+                "filename": "jv880_nvram.bin",
+                "label": "NVRAM (user patches)",
+                "size": 32768,
+                "required": true
+            }
+        ],
+        "folders": [
+            {
+                "path": "expansions",
+                "label": "Expansion ROMs",
+                "description": "SR-JV80 expansion cards (8MB or 2MB .bin files)",
+                "extensions": [
+                    ".bin",
+                    ".BIN"
+                ],
+                "required": false
+            }
+        ]
+    },
+    "capabilities": {
+        "audio_out": true,
+        "audio_in": false,
+        "midi_in": true,
+        "midi_out": false,
+        "midi_channels": 16,
+        "chainable": true,
+        "component_type": "sound_generator",
+        "ui_hierarchy": {
+            "levels": {
+                "root": {
+                    "name": "Mini-JV",
+                    "params": [
+                        "macro_cutoff",
+                        "macro_resonance",
+                        "macro_attack",
+                        "macro_decay",
+                        "macro_release",
+                        "macro_tvf_env_depth",
+                        "nvram_patchCommon_reverblevel",
+                        "nvram_patchCommon_choruslevel",
+                        "mode",
+                        "preset",
+                        "performance",
+                        "octave_transpose"
+                    ],
+                    "knobs": [
+                        "macro_cutoff",
+                        "macro_resonance",
+                        "macro_attack",
+                        "macro_decay",
+                        "macro_release",
+                        "macro_tvf_env_depth",
+                        "nvram_patchCommon_reverblevel",
+                        "nvram_patchCommon_choruslevel"
+                    ]
+                }
+            }
+        },
+        "default_forward_channel": 1,
+        "chain_params": [
+            {
+                "key": "mode",
+                "name": "Mode",
+                "type": "enum",
+                "options": [
+                    "Patch",
+                    "Performance"
+                ],
+                "default": 0
+            },
+            {
+                "key": "preset",
+                "name": "Preset",
+                "type": "int",
+                "min": 0,
+                "max_param": "preset_count",
+                "default": 0
+            },
+            {
+                "key": "performance",
+                "name": "Performance",
+                "type": "int",
+                "min": 0,
+                "max": 47,
+                "default": 0
+            },
+            {
+                "key": "octave_transpose",
+                "name": "Octave",
+                "type": "int",
+                "min": -4,
+                "max": 4,
+                "default": 0
+            },
+            {
+                "key": "macro_cutoff",
+                "name": "Cutoff",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "macro_resonance",
+                "name": "Resonance",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "macro_attack",
+                "name": "Attack",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "macro_decay",
+                "name": "Decay",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "macro_release",
+                "name": "Release",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "macro_tvf_env_depth",
+                "name": "TVF Env",
+                "type": "int",
+                "min": -63,
+                "max": 63,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "nvram_patchCommon_reverblevel",
+                "name": "Reverb",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            },
+            {
+                "key": "nvram_patchCommon_choruslevel",
+                "name": "Chorus",
+                "type": "int",
+                "min": 0,
+                "max": 127,
+                "step": 1,
+                "default": 0
+            }
+        ]
+    }
 }

@@ -58,6 +58,12 @@ let itemsList = [];
 let editingParam = null;    // Currently editing parameter key
 let editingValue = 0;       // Current value being edited
 
+// Knob overlay state
+let knobOverlayParam = null;   // Param key being shown in overlay
+let knobOverlayValue = 0;      // Value at time of last knob turn
+let knobOverlayTick = 0;       // Tick when overlay was last updated
+const KNOB_OVERLAY_TICKS = 60; // ~2 seconds at 30fps
+
 let shiftHeld = false;
 let needsRedraw = true;
 let loadingComplete = false;
@@ -405,6 +411,12 @@ function handleKnob(knobIndex, delta) {
     value += delta * step;
 
     setParamValue(paramKey, value);
+
+    // Update knob overlay state
+    knobOverlayParam = paramKey;
+    knobOverlayValue = getParamValue(paramKey); // read back clamped value
+    knobOverlayTick = tickCount;
+    needsRedraw = true;
 }
 
 /* === Drawing === */
@@ -413,6 +425,7 @@ function draw() {
 
     if (!loadingComplete || !hierarchy) {
         drawLoading();
+        display.flush();
         return;
     }
 
@@ -424,6 +437,15 @@ function draw() {
         drawChildSelector();
     } else {
         drawMenu();
+    }
+
+    // Draw knob overlay on top if active
+    if (knobOverlayParam && (tickCount - knobOverlayTick) < KNOB_OVERLAY_TICKS) {
+        drawKnobOverlay();
+    } else if (knobOverlayParam) {
+        // Overlay expired — clear state and force a clean redraw next tick
+        knobOverlayParam = null;
+        needsRedraw = true;
     }
 
     display.flush();
@@ -620,6 +642,42 @@ function formatValue(value, meta) {
         return meta.options[value] || String(value);
     }
     return String(value);
+}
+
+/* === Knob Overlay === */
+// Drawn on top of any screen when a knob was recently turned.
+// Shows: param name (line 1) and value with range context (line 2).
+// Disappears after KNOB_OVERLAY_TICKS ticks of no knob activity.
+function drawKnobOverlay() {
+    if (!knobOverlayParam) return;
+
+    const meta = getParamMeta(knobOverlayParam);
+    const name = meta.name || knobOverlayParam;
+    const valueStr = formatValue(knobOverlayValue, meta);
+
+    // Build range hint, e.g. "92 [0..127]" — keep total <=21 chars
+    const rangeHint = (meta.min !== undefined && meta.max !== undefined)
+        ? valueStr + ' [' + meta.min + '..' + meta.max + ']'
+        : valueStr;
+
+    // Overlay box: 4px padding, centered vertically around y=24
+    const boxW = SCREEN_WIDTH - 8;      // 120px wide
+    const boxX = 4;
+    const boxY = 18;
+    const boxH = 26;
+
+    // White fill + black border
+    display.fillRect(boxX, boxY, boxW, boxH, 1);
+    display.drawRect(boxX, boxY, boxW, boxH, 0);
+
+    // Line 1: param name (truncate to 19 chars to stay inside box)
+    const displayName = name.length > 19 ? name.substring(0, 19) : name;
+    const nameX = boxX + 4;
+    display.drawText(nameX, boxY + 3, displayName, 0);
+
+    // Line 2: value + range (truncate to 19 chars)
+    const displayRange = rangeHint.length > 19 ? rangeHint.substring(0, 19) : rangeHint;
+    display.drawText(nameX, boxY + 14, displayRange, 0);
 }
 
 /* === Tick === */
