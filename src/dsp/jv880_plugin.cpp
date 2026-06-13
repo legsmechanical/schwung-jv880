@@ -382,6 +382,103 @@ static const macro_def_t* find_macro(const char *key_suffix) {
     return NULL;
 }
 
+/* ---- Patch Common parameters (FX + control section) -------------------
+ * One table drives get, set, and state serialization. Each entry maps a
+ * nvram_patchCommon_<name> param to a byte offset within the 362-byte patch
+ * + a bitfield (shift,width), plus the Roland Patch-Common SysEx parameter
+ * index (DT1 to 00 08 20 <sysexIdx>). Several params share an NVRAM byte
+ * (offset 12 packs reverb/chorus type + velocity switch; offset 24 packs
+ * bend-up/portamento/key-assign/solo-legato; offset 25 packs porta time +
+ * type) — set does read-modify-write to preserve siblings, while each
+ * sub-param has its OWN SysEx address so the firmware unpacks it.
+ * Offsets/indices verified against jv880_juce dataStructures.h and the
+ * existing 8 params (whose SysEx indices match this table exactly). */
+typedef struct {
+    const char *name;
+    int sysexIdx;     /* 4th DT1 address byte under 00 08 20 */
+    int nvramOffset;  /* byte offset within the patch */
+    int shift;        /* bit shift within that byte */
+    int width;        /* value bit width */
+    int minv, maxv;
+} PatchCommonParam;
+
+static const PatchCommonParam PATCH_COMMON_PARAMS[] = {
+    /* name,                sysex, off, sh, w, min, max */
+    {"reverbtype",          0x0D,  12,  0,  4,  0,   7},
+    {"chorustype",          0x11,  12,  4,  2,  0,   2},
+    {"velocityswitch",      0x0C,  12,  7,  1,  0,   1},
+    {"reverblevel",         0x0E,  13,  0,  7,  0, 127},
+    {"reverbtime",          0x0F,  14,  0,  7,  0, 127},
+    {"reverbfeedback",      0x10,  15,  0,  7,  0, 127},
+    {"choruslevel",         0x12,  16,  0,  7,  0, 127},
+    {"chorusoutput",        0x16,  16,  7,  1,  0,   1},
+    {"chorusdepth",         0x13,  17,  0,  7,  0, 127},
+    {"chorusrate",          0x14,  18,  0,  7,  0, 127},
+    {"chorusfeedback",      0x15,  19,  0,  7,  0, 127},
+    {"analogfeel",          0x17,  20,  0,  7,  0, 127},
+    {"patchlevel",          0x18,  21,  0,  7,  0, 127},
+    {"patchpan",            0x19,  22,  0,  7,  0, 127},
+    {"bendrangedown",       0x1A,  23,  0,  7,  0,  48},
+    {"bendrangeup",         0x1B,  24,  0,  4,  0,  12},
+    {"portamentomode",      0x1F,  24,  4,  1,  0,   1},
+    {"sololegato",          0x1D,  24,  5,  1,  0,   1},
+    {"portamentoswitch",    0x1E,  24,  6,  1,  0,   1},
+    {"keyassign",           0x1C,  24,  7,  1,  0,   1},
+    {"portamentotime",      0x21,  25,  0,  7,  0, 127},
+    {"portamentotype",      0x20,  25,  7,  1,  0,   1},
+};
+#define NUM_PATCH_COMMON_PARAMS (sizeof(PATCH_COMMON_PARAMS)/sizeof(PATCH_COMMON_PARAMS[0]))
+
+static const PatchCommonParam* find_patch_common_param(const char *name) {
+    for (size_t i = 0; i < NUM_PATCH_COMMON_PARAMS; i++)
+        if (strcmp(PATCH_COMMON_PARAMS[i].name, name) == 0) return &PATCH_COMMON_PARAMS[i];
+    return NULL;
+}
+
+/* ---- Per-tone control matrix (Mod/Aftertouch/Expression -> 4 dests) ----
+ * JV-880 has, per tone, three controller sources (Modulation/CC1, Aftertouch,
+ * Expression/CC11), each routing to 4 destination slots (A..D) with a signed
+ * sensitivity. In NVRAM the 4 destinations are packed two-per-byte (DestAB:
+ * low nibble=A, high=B; DestCD: low=C, high=D); the 4 sensitivities are
+ * separate signed int8 bytes (center 0). On the SysEx wire each slot has its
+ * OWN dest + sens address (interleaved), and sensitivity is sent +64.
+ *   dest value: 0=Off 1=Pitch 2=Cutoff 3=Resonance 4=Level 5/6=LFO1/2->Pitch
+ *               7/8=LFO1/2->TVF 9/10=LFO1/2->TVA 11/12=LFO1/2 Rate
+ * Kept OUT of the binary-searched TONE_PARAMS table (separate linear lookup)
+ * and handled in the tone get/set paths. Tone-relative offsets 5..22, SysEx
+ * indices from jv880_juce EditToneTab.cpp. */
+typedef struct {
+    const char *name;
+    int off;       /* tone-relative NVRAM byte offset */
+    int shift;     /* nibble shift for dest (0 or 4); ignored for sens */
+    int width;     /* bit width for dest (4); ignored for sens */
+    int sysexIdx;  /* tone-area SysEx param index */
+    int isSens;    /* 1 = signed sensitivity byte; 0 = nibble-packed dest */
+} MatrixParam;
+
+static const MatrixParam MATRIX_PARAMS[] = {
+    /* name,      off, sh, w, sysex, sens */
+    {"moddesta",   5, 0, 4, 0x0A, 0}, {"moddestb",  5, 4, 4, 0x0C, 0},
+    {"moddestc",   6, 0, 4, 0x0E, 0}, {"moddestd",  6, 4, 4, 0x10, 0},
+    {"modsensa",   7, 0, 0, 0x0B, 1}, {"modsensb",  8, 0, 0, 0x0D, 1},
+    {"modsensc",   9, 0, 0, 0x0F, 1}, {"modsensd", 10, 0, 0, 0x11, 1},
+    {"aftdesta",  11, 0, 4, 0x12, 0}, {"aftdestb", 11, 4, 4, 0x14, 0},
+    {"aftdestc",  12, 0, 4, 0x16, 0}, {"aftdestd", 12, 4, 4, 0x18, 0},
+    {"aftsensa",  13, 0, 0, 0x13, 1}, {"aftsensb", 14, 0, 0, 0x15, 1},
+    {"aftsensc",  15, 0, 0, 0x17, 1}, {"aftsensd", 16, 0, 0, 0x19, 1},
+    {"expdesta",  17, 0, 4, 0x1A, 0}, {"expdestb", 17, 4, 4, 0x1C, 0},
+    {"expdestc",  18, 0, 4, 0x1E, 0}, {"expdestd", 18, 4, 4, 0x20, 0},
+    {"expsensa",  19, 0, 0, 0x1B, 1}, {"expsensb", 20, 0, 0, 0x1D, 1},
+    {"expsensc",  21, 0, 0, 0x1F, 1}, {"expsensd", 22, 0, 0, 0x21, 1},
+};
+#define NUM_MATRIX_PARAMS (sizeof(MATRIX_PARAMS)/sizeof(MATRIX_PARAMS[0]))
+
+static const MatrixParam* find_matrix_param(const char *name) {
+    for (size_t i = 0; i < NUM_MATRIX_PARAMS; i++)
+        if (strcmp(MATRIX_PARAMS[i].name, name) == 0) return &MATRIX_PARAMS[i];
+    return NULL;
+}
+
 /* ========================================================================
  * SHARED HELPER FUNCTIONS
  * ======================================================================== */
@@ -2515,26 +2612,16 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         v2_select_patch(inst, 0);
         fprintf(stderr, "JV880 v2: Jumped to internal patches\n");
     } else if (strncmp(key, "nvram_patchCommon_", 18) == 0 && inst->mcu) {
-        const char *paramName = key + 18;
-        int sysexIdx = -1;
-        int nvramOffset = -1;
-
-        /* Map parameter names to both SysEx index and NVRAM offset */
-        if (strcmp(paramName, "reverblevel") == 0) { sysexIdx = 14; nvramOffset = 13; }
-        else if (strcmp(paramName, "reverbtime") == 0) { sysexIdx = 15; nvramOffset = 14; }
-        else if (strcmp(paramName, "choruslevel") == 0) { sysexIdx = 18; nvramOffset = 16; }
-        else if (strcmp(paramName, "chorusdepth") == 0) { sysexIdx = 19; nvramOffset = 17; }
-        else if (strcmp(paramName, "chorusrate") == 0) { sysexIdx = 20; nvramOffset = 18; }
-        else if (strcmp(paramName, "analogfeel") == 0) { sysexIdx = 23; nvramOffset = 20; }
-        else if (strcmp(paramName, "patchlevel") == 0) { sysexIdx = 0x18; nvramOffset = 21; }  /* 18h per MIDI Impl */
-        else if (strcmp(paramName, "patchpan") == 0) { sysexIdx = 0x19; nvramOffset = 22; }   /* 19h per MIDI Impl */
-
-        if (sysexIdx >= 0 && nvramOffset >= 0) {
-            const int v = clamp_int(atoi(val), 0, 127);
-            /* Update NVRAM directly for immediate UI feedback */
-            inst->mcu->nvram[NVRAM_PATCH_OFFSET + nvramOffset] = (uint8_t)v;
-            /* Send SysEx to emulator for actual sound change */
-            v2_queue_patch_common_sysex(inst, sysexIdx, v);
+        const PatchCommonParam *pc = find_patch_common_param(key + 18);
+        if (pc) {
+            int v = clamp_int(atoi(val), pc->minv, pc->maxv);
+            int mask = ((1 << pc->width) - 1) << pc->shift;
+            /* Read-modify-write the NVRAM byte (preserves sibling bitfields)
+             * for immediate readback; send the sub-value to its own SysEx
+             * address so the emulator applies the sound change. */
+            uint8_t *b = &inst->mcu->nvram[NVRAM_PATCH_OFFSET + pc->nvramOffset];
+            *b = (uint8_t)((*b & ~mask) | ((v << pc->shift) & mask));
+            v2_queue_patch_common_sysex(inst, pc->sysexIdx, v);
         }
     } else if (strncmp(key, "nvram_tone_", 11) == 0 && inst->mcu) {
         /* Optimized tone param set using binary search lookup */
@@ -2543,6 +2630,23 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (underscore && toneIdx >= 0 && toneIdx < 4) {
             const char *paramName = underscore + 1;
             const int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
+
+            /* Per-tone control matrix (dest nibble / signed sensitivity). */
+            const MatrixParam *mx = find_matrix_param(paramName);
+            if (mx) {
+                uint8_t *mb = &inst->mcu->nvram[toneBase + mx->off];
+                if (mx->isSens) {
+                    int sv = clamp_int(atoi(val), -63, 63);
+                    *mb = (uint8_t)(int8_t)sv;
+                    v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, sv + 64, 0);
+                } else {
+                    int dv = clamp_int(atoi(val), 0, 12);
+                    int dmask = ((1 << mx->width) - 1) << mx->shift;
+                    *mb = (uint8_t)((*mb & ~dmask) | ((dv << mx->shift) & dmask));
+                    v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, dv, 0);
+                }
+                return;
+            }
 
             const ToneParamEntry *p = find_tone_param(paramName);
             if (p) {
@@ -3098,6 +3202,14 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 tone_cache_valid = now;
             }
 
+            /* Per-tone control matrix (dest nibble / signed sensitivity). */
+            const MatrixParam *mx = find_matrix_param(paramName);
+            if (mx) {
+                uint8_t mbyte = tone_cache[(toneIdx * 84) + mx->off];
+                if (mx->isSens) return snprintf(buf, buf_len, "%d", (int)(int8_t)mbyte);
+                return snprintf(buf, buf_len, "%d", (mbyte >> mx->shift) & ((1 << mx->width) - 1));
+            }
+
             const ToneParamEntry *p = find_tone_param(paramName);
             if (p) {
                 int cacheOffset = (toneIdx * 84) + p->nvram_offset;
@@ -3266,22 +3378,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
     }
 
-    /* Fast path for nvram_patchCommon_ params */
+    /* Fast path for nvram_patchCommon_ params (FX + control section) */
     if (strncmp(key, "nvram_patchCommon_", 18) == 0 && inst->mcu) {
-        const char* paramName = key + 18;
-        int offset = -1;
-
-        if (strcmp(paramName, "patchlevel") == 0) offset = 21;
-        else if (strcmp(paramName, "patchpan") == 0) offset = 22;
-        else if (strcmp(paramName, "reverblevel") == 0) offset = 13;
-        else if (strcmp(paramName, "reverbtime") == 0) offset = 14;
-        else if (strcmp(paramName, "choruslevel") == 0) offset = 16;
-        else if (strcmp(paramName, "chorusdepth") == 0) offset = 17;
-        else if (strcmp(paramName, "chorusrate") == 0) offset = 18;
-        else if (strcmp(paramName, "analogfeel") == 0) offset = 20;
-
-        if (offset >= 0) {
-            return snprintf(buf, buf_len, "%d", inst->mcu->nvram[NVRAM_PATCH_OFFSET + offset]);
+        const PatchCommonParam *pc = find_patch_common_param(key + 18);
+        if (pc) {
+            uint8_t b = inst->mcu->nvram[NVRAM_PATCH_OFFSET + pc->nvramOffset];
+            int v = (b >> pc->shift) & ((1 << pc->width) - 1);
+            return snprintf(buf, buf_len, "%d", v);
         }
     }
 
@@ -3362,6 +3465,38 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     inst->mcu->nvram[NVRAM_PATCH_OFFSET + i]);
             }
             written += snprintf(buf + written, buf_len - written, "\"");
+        }
+
+        /* Flat native-int param values so schwung-manager's bulk init path
+         * (sendAllParamsAtOnce, which reads this "state" key) can seed the
+         * graphical remote UI — without these it forwards only the fields
+         * above and every macro/tone/patch-common control inits blank.
+         * Emitted AFTER the authoritative patch hex and behind a hard size
+         * guard (also bounded to the 16KB chain-autosave buffer), so "state"
+         * stays valid JSON and save/restore can never be truncated. The
+         * "state" set parser looks up only named keys, so these are ignored
+         * on restore; values come from this same get_param, so they always
+         * match what the UI controls expect. */
+        if (inst->mcu && inst->loading_complete) {
+            const int SAFE = (buf_len < 15800 ? buf_len : 15800) - 64;
+            char tmp[48], k[48];
+            for (size_t mi = 0; mi < NUM_MACROS && written < SAFE; mi++) {
+                snprintf(k, sizeof(k), "macro_%s", MACRO_DEFS[mi].key);
+                int n = v2_get_param(instance, k, tmp, sizeof(tmp));
+                if (n > 0) written += snprintf(buf + written, buf_len - written, ",\"%s\":%s", k, tmp);
+            }
+            for (size_t pi = 0; pi < NUM_PATCH_COMMON_PARAMS && written < SAFE; pi++) {
+                snprintf(k, sizeof(k), "nvram_patchCommon_%s", PATCH_COMMON_PARAMS[pi].name);
+                int n = v2_get_param(instance, k, tmp, sizeof(tmp));
+                if (n > 0) written += snprintf(buf + written, buf_len - written, ",\"%s\":%s", k, tmp);
+            }
+            for (int t = 0; t < 4 && written < SAFE; t++) {
+                for (size_t ti = 0; ti < sizeof(TONE_PARAMS)/sizeof(TONE_PARAMS[0]) && written < SAFE; ti++) {
+                    snprintf(k, sizeof(k), "nvram_tone_%d_%s", t, TONE_PARAMS[ti].name);
+                    int n = v2_get_param(instance, k, tmp, sizeof(tmp));
+                    if (n > 0) written += snprintf(buf + written, buf_len - written, ",\"%s\":%s", k, tmp);
+                }
+            }
         }
         written += snprintf(buf + written, buf_len - written, "}");
         return written;
@@ -3761,6 +3896,26 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             {"drylevel","Dry Level"},{"reverbsendlevel","Reverb Send"},
             {"chorussendlevel","Chorus Send"},
         };
+        /* Control matrix: one page per source, 8 params each (Dest+Sens × 4
+         * slots interleaved so each Dest sits next to its Sens). */
+        static const struct ToneSecParam mod_p[] = {
+            {"moddesta","Mod Dest A"},{"modsensa","Mod Sens A"},
+            {"moddestb","Mod Dest B"},{"modsensb","Mod Sens B"},
+            {"moddestc","Mod Dest C"},{"modsensc","Mod Sens C"},
+            {"moddestd","Mod Dest D"},{"modsensd","Mod Sens D"},
+        };
+        static const struct ToneSecParam aft_p[] = {
+            {"aftdesta","Aft Dest A"},{"aftsensa","Aft Sens A"},
+            {"aftdestb","Aft Dest B"},{"aftsensb","Aft Sens B"},
+            {"aftdestc","Aft Dest C"},{"aftsensc","Aft Sens C"},
+            {"aftdestd","Aft Dest D"},{"aftsensd","Aft Sens D"},
+        };
+        static const struct ToneSecParam exp_p[] = {
+            {"expdesta","Exp Dest A"},{"expsensa","Exp Sens A"},
+            {"expdestb","Exp Dest B"},{"expsensb","Exp Sens B"},
+            {"expdestc","Exp Dest C"},{"expsensc","Exp Sens C"},
+            {"expdestd","Exp Dest D"},{"expsensd","Exp Sens D"},
+        };
 
         #define TSEC(id,label,arr) { id, label, arr, (int)(sizeof(arr)/sizeof((arr)[0])) }
         static const struct ToneSection sections[] = {
@@ -3771,6 +3926,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             TSEC("lfo1","LFO 1",lfo1_p),
             TSEC("lfo2","LFO 2",lfo2_p),
             TSEC("fx","FX Sends",fx_p),
+            TSEC("mod","Mod Matrix",mod_p),
+            TSEC("aft","Aftertouch",aft_p),
+            TSEC("exp","Expression",exp_p),
         };
         #undef TSEC
         const int section_count = (int)(sizeof(sections)/sizeof(sections[0]));
@@ -3820,30 +3978,51 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         "{\"key\":\"macro_release\",\"label\":\"Release\"},"
                         "{\"key\":\"macro_tvf_env_depth\",\"label\":\"Filter Env\"},"
                         "{\"key\":\"macro_lfo_depth\",\"label\":\"LFO Depth\"},"
-                        "{\"key\":\"nvram_patchCommon_reverblevel\",\"label\":\"Reverb\"},"
-                        "{\"key\":\"nvram_patchCommon_choruslevel\",\"label\":\"Chorus\"},"
+                        "{\"level\":\"patch_common\",\"label\":\"Common / Control\"},"
+                        "{\"level\":\"effects\",\"label\":\"Effects\"},"
                         "{\"level\":\"tone_selector\",\"label\":\"Edit Tones\"},"
-                        "{\"level\":\"patch_common\",\"label\":\"Common Settings\"},"
                         "{\"level\":\"save_slot\",\"label\":\"Save to Slot\"},"
                         "{\"level\":\"expansions\",\"label\":\"Jump to Expansion\"}"
                     "]"
                 "},"
                 "\"patch_common\":{"
-                    "\"label\":\"Common\","
+                    "\"label\":\"Common / Control\","
                     "\"children\":null,"
                     /* knobs must be keys present in this level's params
                      * (renderer filters otherwise) */
-                    "\"knobs\":[\"nvram_patchCommon_patchlevel\",\"nvram_patchCommon_patchpan\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_reverbtime\",\"nvram_patchCommon_choruslevel\",\"nvram_patchCommon_chorusdepth\",\"nvram_patchCommon_chorusrate\",\"nvram_patchCommon_analogfeel\"],"
+                    "\"knobs\":[\"nvram_patchCommon_patchlevel\",\"nvram_patchCommon_patchpan\",\"nvram_patchCommon_analogfeel\",\"nvram_patchCommon_bendrangeup\",\"nvram_patchCommon_bendrangedown\",\"nvram_patchCommon_portamentoswitch\",\"nvram_patchCommon_portamentotime\",\"nvram_patchCommon_keyassign\"],"
                     "\"params\":["
                         "{\"key\":\"nvram_patchCommon_patchlevel\",\"label\":\"Patch Level\"},"
                         "{\"key\":\"nvram_patchCommon_patchpan\",\"label\":\"Patch Pan\"},"
+                        "{\"key\":\"nvram_patchCommon_analogfeel\",\"label\":\"Analog Feel\"},"
+                        "{\"key\":\"octave_transpose\",\"label\":\"Octave\"},"
+                        "{\"key\":\"nvram_patchCommon_bendrangeup\",\"label\":\"Bend Up\"},"
+                        "{\"key\":\"nvram_patchCommon_bendrangedown\",\"label\":\"Bend Down\"},"
+                        "{\"key\":\"nvram_patchCommon_portamentoswitch\",\"label\":\"Portamento\"},"
+                        "{\"key\":\"nvram_patchCommon_portamentomode\",\"label\":\"Porta Mode\"},"
+                        "{\"key\":\"nvram_patchCommon_portamentotype\",\"label\":\"Porta Type\"},"
+                        "{\"key\":\"nvram_patchCommon_portamentotime\",\"label\":\"Porta Time\"},"
+                        "{\"key\":\"nvram_patchCommon_keyassign\",\"label\":\"Key Assign\"},"
+                        "{\"key\":\"nvram_patchCommon_sololegato\",\"label\":\"Solo Legato\"},"
+                        "{\"key\":\"nvram_patchCommon_velocityswitch\",\"label\":\"Velocity Sw\"}"
+                    "]"
+                "},"
+                "\"effects\":{"
+                    "\"label\":\"Effects\","
+                    "\"children\":null,"
+                    "\"knobs\":[\"nvram_patchCommon_reverbtype\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_reverbtime\",\"nvram_patchCommon_reverbfeedback\",\"nvram_patchCommon_chorustype\",\"nvram_patchCommon_choruslevel\",\"nvram_patchCommon_chorusdepth\",\"nvram_patchCommon_chorusrate\"],"
+                    "\"knob_labels\":[\"RvTy\",\"RvLv\",\"RvTm\",\"RvFb\",\"ChTy\",\"ChLv\",\"ChDp\",\"ChRt\"],"
+                    "\"params\":["
+                        "{\"key\":\"nvram_patchCommon_reverbtype\",\"label\":\"Reverb Type\"},"
                         "{\"key\":\"nvram_patchCommon_reverblevel\",\"label\":\"Reverb Level\"},"
                         "{\"key\":\"nvram_patchCommon_reverbtime\",\"label\":\"Reverb Time\"},"
+                        "{\"key\":\"nvram_patchCommon_reverbfeedback\",\"label\":\"Reverb Feedback\"},"
+                        "{\"key\":\"nvram_patchCommon_chorustype\",\"label\":\"Chorus Type\"},"
                         "{\"key\":\"nvram_patchCommon_choruslevel\",\"label\":\"Chorus Level\"},"
                         "{\"key\":\"nvram_patchCommon_chorusdepth\",\"label\":\"Chorus Depth\"},"
                         "{\"key\":\"nvram_patchCommon_chorusrate\",\"label\":\"Chorus Rate\"},"
-                        "{\"key\":\"nvram_patchCommon_analogfeel\",\"label\":\"Analog Feel\"},"
-                        "{\"key\":\"octave_transpose\",\"label\":\"Octave\"}"
+                        "{\"key\":\"nvram_patchCommon_chorusfeedback\",\"label\":\"Chorus Feedback\"},"
+                        "{\"key\":\"nvram_patchCommon_chorusoutput\",\"label\":\"Chorus Output\"}"
                     "]"
                 "},"
                 /* Tone selector: plain menu that navigates to one explicit
@@ -4078,6 +4257,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             {"drylevel",                   "\"name\":\"Dry Level\",\"type\":\"int\",\"min\":0,\"max\":127"},
             {"reverbsendlevel",            "\"name\":\"Reverb Send\",\"type\":\"int\",\"min\":0,\"max\":127"},
             {"chorussendlevel",            "\"name\":\"Chorus Send\",\"type\":\"int\",\"min\":0,\"max\":127"},
+            /* Control matrix: 3 sources x (4 dest enums + 4 signed sens). Dest
+             * enum order matches the firmware's destination indices 0..12. */
+            #define MXDEST(nm) "\"name\":\"" nm "\",\"type\":\"enum\",\"options\":[\"Off\",\"Pitch\",\"Cutoff\",\"Reso\",\"Level\",\"L1>Pit\",\"L2>Pit\",\"L1>TVF\",\"L2>TVF\",\"L1>TVA\",\"L2>TVA\",\"L1 Rate\",\"L2 Rate\"]"
+            #define MXSENS(nm) "\"name\":\"" nm "\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\""
+            {"moddesta", MXDEST("Mod Dest A")}, {"modsensa", MXSENS("Mod Sens A")},
+            {"moddestb", MXDEST("Mod Dest B")}, {"modsensb", MXSENS("Mod Sens B")},
+            {"moddestc", MXDEST("Mod Dest C")}, {"modsensc", MXSENS("Mod Sens C")},
+            {"moddestd", MXDEST("Mod Dest D")}, {"modsensd", MXSENS("Mod Sens D")},
+            {"aftdesta", MXDEST("Aft Dest A")}, {"aftsensa", MXSENS("Aft Sens A")},
+            {"aftdestb", MXDEST("Aft Dest B")}, {"aftsensb", MXSENS("Aft Sens B")},
+            {"aftdestc", MXDEST("Aft Dest C")}, {"aftsensc", MXSENS("Aft Sens C")},
+            {"aftdestd", MXDEST("Aft Dest D")}, {"aftsensd", MXSENS("Aft Sens D")},
+            {"expdesta", MXDEST("Exp Dest A")}, {"expsensa", MXSENS("Exp Sens A")},
+            {"expdestb", MXDEST("Exp Dest B")}, {"expsensb", MXSENS("Exp Sens B")},
+            {"expdestc", MXDEST("Exp Dest C")}, {"expsensc", MXSENS("Exp Sens C")},
+            {"expdestd", MXDEST("Exp Dest D")}, {"expsensd", MXSENS("Exp Sens D")},
+            #undef MXDEST
+            #undef MXSENS
         };
         const int tone_meta_count = (int)(sizeof(tone_meta)/sizeof(tone_meta[0]));
 
@@ -4114,7 +4311,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"nvram_patchCommon_choruslevel\",\"name\":\"Chorus\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
             "{\"key\":\"nvram_patchCommon_chorusdepth\",\"name\":\"Chorus Depth\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"nvram_patchCommon_chorusrate\",\"name\":\"Chorus Rate\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"nvram_patchCommon_analogfeel\",\"name\":\"Analog Feel\",\"type\":\"int\",\"min\":0,\"max\":127},");
+            "{\"key\":\"nvram_patchCommon_analogfeel\",\"name\":\"Analog Feel\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            /* Effects: reverb/chorus type + feedback + output */
+            "{\"key\":\"nvram_patchCommon_reverbtype\",\"name\":\"Reverb Type\",\"type\":\"enum\",\"options\":[\"Room1\",\"Room2\",\"Stage1\",\"Stage2\",\"Hall1\",\"Hall2\",\"Delay\",\"Pan-Dly\"]},"
+            "{\"key\":\"nvram_patchCommon_reverbfeedback\",\"name\":\"Reverb Feedback\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"nvram_patchCommon_chorustype\",\"name\":\"Chorus Type\",\"type\":\"enum\",\"options\":[\"Chorus1\",\"Chorus2\",\"Chorus3\"]},"
+            "{\"key\":\"nvram_patchCommon_chorusfeedback\",\"name\":\"Chorus Feedback\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"nvram_patchCommon_chorusoutput\",\"name\":\"Chorus Output\",\"type\":\"enum\",\"options\":[\"Mix\",\"Reverb\"]},"
+            /* Control / play */
+            "{\"key\":\"nvram_patchCommon_bendrangeup\",\"name\":\"Bend Up\",\"type\":\"int\",\"min\":0,\"max\":12},"
+            "{\"key\":\"nvram_patchCommon_bendrangedown\",\"name\":\"Bend Down\",\"type\":\"int\",\"min\":0,\"max\":48},"
+            "{\"key\":\"nvram_patchCommon_portamentoswitch\",\"name\":\"Portamento\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
+            "{\"key\":\"nvram_patchCommon_portamentomode\",\"name\":\"Porta Mode\",\"type\":\"enum\",\"options\":[\"Legato\",\"Normal\"]},"
+            "{\"key\":\"nvram_patchCommon_portamentotype\",\"name\":\"Porta Type\",\"type\":\"enum\",\"options\":[\"Time\",\"Rate\"]},"
+            "{\"key\":\"nvram_patchCommon_portamentotime\",\"name\":\"Porta Time\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"nvram_patchCommon_keyassign\",\"name\":\"Key Assign\",\"type\":\"enum\",\"options\":[\"Poly\",\"Solo\"]},"
+            "{\"key\":\"nvram_patchCommon_sololegato\",\"name\":\"Solo Legato\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
+            "{\"key\":\"nvram_patchCommon_velocityswitch\",\"name\":\"Velocity Sw\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},");
 
         /* ---- per-tone metadata (fully-qualified keys, 4 tones) ---- */
         for (int t = 0; t < 4; t++) {
