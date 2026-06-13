@@ -3708,41 +3708,48 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             {"toneswitch","Tone Switch"},{"wavegroup","Wave Group"},
             {"wavenumber","Wave Number"},{"fxmswitch","FXM"},{"fxmdepth","FXM Depth"},
         };
+        /* NOTE: the renderer filters a level's knobs to keys ALSO present in
+         * its params (shadow_ui.js applyHierarchyVisibilityFilters), so each
+         * section's knob row = its FIRST 8 params. Order lists accordingly:
+         * most-tweaked first. */
         static const struct ToneSecParam pitch_p[] = {
             {"pitchcoarse","Pitch Coarse"},{"pitchfine","Pitch Fine"},
-            {"pitchkeyfollow","Pitch KF"},{"randompitchdepth","Random Pitch"},
             {"penvdepth","P.Env Depth"},
             {"penvtime1","P.Env T1"},{"penvtime2","P.Env T2"},
-            {"penvtime3","P.Env T3"},{"penvtime4","P.Env T4"},
+            {"penvtime4","P.Env T4"},
+            {"pitchkeyfollow","Pitch KF"},{"randompitchdepth","Random Pitch"},
+            {"penvtime3","P.Env T3"},
             {"penvlevel1","P.Env L1"},{"penvlevel2","P.Env L2"},
             {"penvlevel3","P.Env L3"},{"penvlevel4","P.Env L4"},
         };
         static const struct ToneSecParam filter_p[] = {
-            {"filtermode","Filter Mode"},{"cutofffrequency","Cutoff"},
-            {"resonance","Resonance"},{"cutoffkeyfollow","Cutoff KF"},
-            {"resonancemode","Reso Mode"},
-            {"tvfenvdepth","F.Env Depth"},{"tvfenvvelocitylevelsense","F.Env Velo"},
+            {"cutofffrequency","Cutoff"},{"resonance","Resonance"},
+            {"tvfenvdepth","F.Env Depth"},
             {"tvfenvtime1","F.Env T1"},{"tvfenvtime2","F.Env T2"},
-            {"tvfenvtime3","F.Env T3"},{"tvfenvtime4","F.Env T4"},
+            {"tvfenvlevel3","F.Env L3"},{"tvfenvtime4","F.Env T4"},
+            {"filtermode","Filter Mode"},
+            {"cutoffkeyfollow","Cutoff KF"},{"resonancemode","Reso Mode"},
+            {"tvfenvvelocitylevelsense","F.Env Velo"},
+            {"tvfenvtime3","F.Env T3"},
             {"tvfenvlevel1","F.Env L1"},{"tvfenvlevel2","F.Env L2"},
-            {"tvfenvlevel3","F.Env L3"},{"tvfenvlevel4","F.Env L4"},
+            {"tvfenvlevel4","F.Env L4"},
         };
         static const struct ToneSecParam amp_p[] = {
             {"level","Level"},{"pan","Pan"},
-            {"levelkeyfollow","Level KF"},{"panningkeyfollow","Pan KF"},
-            {"tvaenvvelocitylevelsense","A.Env Velo"},{"tvaenvvelocitycurve","A.Env Curve"},
             {"tvaenvtime1","A.Env T1"},{"tvaenvtime2","A.Env T2"},
-            {"tvaenvtime3","A.Env T3"},{"tvaenvtime4","A.Env T4"},
+            {"tvaenvlevel3","A.Env L3"},{"tvaenvtime4","A.Env T4"},
+            {"tvaenvvelocitylevelsense","A.Env Velo"},{"tvaenvvelocitycurve","A.Env Curve"},
+            {"levelkeyfollow","Level KF"},{"panningkeyfollow","Pan KF"},
+            {"tvaenvtime3","A.Env T3"},
             {"tvaenvlevel1","A.Env L1"},{"tvaenvlevel2","A.Env L2"},
-            {"tvaenvlevel3","A.Env L3"},
             {"tonedelaymode","Delay Mode"},{"tonedelaytime","Delay Time"},
         };
         static const struct ToneSecParam lfo1_p[] = {
             {"lfo1form","LFO1 Wave"},{"lfo1rate","LFO1 Rate"},
             {"lfo1delay","LFO1 Delay"},{"lfo1fadetime","LFO1 Fade"},
-            {"lfo1offset","LFO1 Offset"},{"lfo1synchro","LFO1 Sync"},
             {"lfo1pitchdepth","LFO1 Pitch"},{"lfo1tvfdepth","LFO1 Filter"},
-            {"lfo1tvadepth","LFO1 Amp"},
+            {"lfo1tvadepth","LFO1 Amp"},{"lfo1offset","LFO1 Offset"},
+            {"lfo1synchro","LFO1 Sync"},
         };
         static const struct ToneSecParam lfo2_p[] = {
             {"lfo2form","LFO2 Wave"},{"lfo2rate","LFO2 Rate"},
@@ -3824,8 +3831,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 "\"patch_common\":{"
                     "\"label\":\"Common\","
                     "\"children\":null,"
-                    "\"knobs\":[\"macro_cutoff\",\"macro_resonance\",\"macro_attack\",\"macro_decay\",\"macro_sustain\",\"macro_release\",\"macro_tvf_env_depth\",\"macro_lfo_depth\"],"
-                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Env\",\"LFO\"],"
+                    /* knobs must be keys present in this level's params
+                     * (renderer filters otherwise) */
+                    "\"knobs\":[\"nvram_patchCommon_patchlevel\",\"nvram_patchCommon_patchpan\",\"nvram_patchCommon_reverblevel\",\"nvram_patchCommon_reverbtime\",\"nvram_patchCommon_choruslevel\",\"nvram_patchCommon_chorusdepth\",\"nvram_patchCommon_chorusrate\",\"nvram_patchCommon_analogfeel\"],"
                     "\"params\":["
                         "{\"key\":\"nvram_patchCommon_patchlevel\",\"label\":\"Patch Level\"},"
                         "{\"key\":\"nvram_patchCommon_patchpan\",\"label\":\"Patch Pan\"},"
@@ -3866,15 +3874,17 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             kw += snprintf(knobs_json + kw, sizeof(knobs_json) - kw, "]");
 
-            /* tone<N> menu: lists the 7 sections, plus a quick toneswitch toggle. */
+            /* tone<N> menu: nav-only (no editable params). The renderer keeps a
+             * level's FULL knob row only when the level has no editable params
+             * visible; with any editable param, knobs are filtered to keys
+             * present in params. Tone Switch lives in the Wave section. */
             APPEND("\"tone%d\":{"
                     "\"label\":\"Tone %d\","
                     "\"children\":null,"
                     "\"knobs\":%s,"
                     "\"knob_labels\":[%s],"
-                    "\"params\":["
-                        "{\"key\":\"nvram_tone_%d_toneswitch\",\"label\":\"Tone Switch\"},",
-                    t + 1, t + 1, knobs_json, knob_labels, t);
+                    "\"params\":[",
+                    t + 1, t + 1, knobs_json, knob_labels);
             for (int s = 0; s < section_count; s++) {
                 APPEND("{\"level\":\"tone%d_%s\",\"label\":\"%s\"}%s",
                     t + 1, sections[s].id, sections[s].label,
@@ -3882,16 +3892,22 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             APPEND("%s", "]},");
 
-            /* tone<N>_<section> leaf levels with fully-qualified keys. */
+            /* tone<N>_<section> leaf levels with fully-qualified keys.
+             * Section knobs = the section's first up-to-8 params (renderer
+             * filters knobs to keys present in this level's params). */
             for (int s = 0; s < section_count; s++) {
                 const struct ToneSection *sec = &sections[s];
                 APPEND("\"tone%d_%s\":{"
                         "\"label\":\"%s\","
                         "\"children\":null,"
-                        "\"knobs\":%s,"
-                        "\"knob_labels\":[%s],"
-                        "\"params\":[",
-                    t + 1, sec->id, sec->label, knobs_json, knob_labels);
+                        "\"knobs\":[",
+                    t + 1, sec->id, sec->label);
+                int nk = sec->param_count < 8 ? sec->param_count : 8;
+                for (int k = 0; k < nk; k++) {
+                    APPEND("%s\"nvram_tone_%d_%s\"", k ? "," : "", t,
+                        sec->params[k].suffix);
+                }
+                APPEND("%s", "],\"params\":[");
                 for (int p = 0; p < sec->param_count; p++) {
                     APPEND("{\"key\":\"nvram_tone_%d_%s\",\"label\":\"%s\"}%s",
                         t, sec->params[p].suffix, sec->params[p].label,
