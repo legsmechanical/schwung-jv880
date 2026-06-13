@@ -38,7 +38,7 @@ static void jv_debug(const char *fmt, ...) {
  * PERFORMANCE STATS INSTRUMENTATION
  * Set to 0 to compile out all instrumentation (zero overhead).
  * ======================================================================== */
-#define JV880_PERF_STATS 1
+#define JV880_PERF_STATS 0
 
 /* Patch data constants */
 #define PATCH_SIZE 0x16a  /* 362 bytes per patch */
