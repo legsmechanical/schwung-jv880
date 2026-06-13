@@ -185,3 +185,71 @@ Attack, Decay, Release, TVF Env macros + Reverb, Chorus levels). Default macro m
 6. **State round-trip.** Save chain state (autosave), reload. `macro_mode` and the edited
    working patch are restored from the state JSON (version 2). A v1 state with no
    `macro_mode` field loads with the default (absolute).
+
+---
+
+## Phase B — Tone editing (nested hierarchy + value formatting + save)
+
+All tone params are absolute per-tone `nvram_tone_<N>_<param>` keys (N=0..3).
+Navigation: from a patch, click the jog to open the patch edit menu (`patch_main`),
+choose **Edit Tones**. The hierarchy is max depth 3: root → Tone N → section.
+
+### 1. Tone selection
+
+1. **Tone tabs.** In **Edit Tones** (`tone_selector`), Left/Right switch the selected tone
+   (Tone 1–4). The header tabs highlight the active tone. The `toneswitch` row at the top
+   shows the tone's on/off state (Off/On, not 0/1); click it to toggle and confirm the tone
+   mutes/unmutes audibly.
+2. **Tone persists into sections.** Select Tone 3, open **Filter**, edit Cutoff — confirm
+   only Tone 3's filter changes (Tones 1/2/4 unaffected). Back out, select Tone 1, open
+   **Filter** again — it now edits Tone 1. (Section pages resolve against the persisted
+   selected-tone index.)
+
+### 2. Knob row follows the selected tone (every level)
+
+3. **Knob row is live on the selector and every section.** Knobs map to:
+   Cut(`cutofffrequency`) Res(`resonance`) Atk(`tvaenvtime1`) Dcy(`tvaenvtime2`)
+   Sus(`tvaenvlevel3`) Rel(`tvaenvtime4`) Lvl(`level`) Pan(`pan`). On the tone selector AND
+   inside Wave/Pitch/Filter/Amp/LFO/FX, turning each knob must change the SELECTED tone's
+   corresponding param, audibly. Switch tones, repeat — the same knobs now drive the new tone.
+
+### 3. Sections edit audibly
+
+4. **Wave.** wavegroup (enum INT-A/INT-B/EXP-A/EXP-B), wavenumber, fxmswitch (Off/On),
+   fxmdepth, toneswitch. Changing wavenumber changes the sampled waveform.
+5. **Pitch.** coarse (signed, centered), fine (signed), keyfollow, pitch env depth+T1–4/L1–4.
+   Coarse ±N audibly transposes the tone.
+6. **Filter.** mode (Off/LPF/HPF enum), cutoff, resonance, keyfollow, reso mode, TVF env
+   depth (signed) + velo (signed) + T1–4/L1–4. LPF cutoff sweep is audible; HPF thins the low end.
+7. **Amp.** level, pan, velo sense (signed)/curve, TVA env T1–4/L1–4, tone delay mode (enum
+   Normal/Hold/Play-Mate/Clock)/time. Attack/Release changes shape the envelope audibly.
+8. **LFO 1 / LFO 2.** form (TRI/SIN/SAW/SQU/RND1/RND2 enum), rate, delay, fade, offset, sync
+   (LFO1 only), pitch/TVF/TVA depths (signed). Raising LFO1 pitch depth introduces vibrato.
+9. **FX Sends.** drylevel, reverbsendlevel, chorussendlevel — raising reverb send increases
+   the tone's reverb tail.
+
+### 4. Enum / signed value display
+
+10. **Enums show names, not numbers.** Verify: filter mode reads **Off/LPF/HPF**; LFO form
+    reads **TRI/SIN/SAW/SQU/RND1/RND2**; wave group reads **INT-A/…**; on/off switches read
+    **Off/On**; delay mode reads its names. None display a bare integer.
+11. **Signed params centered.** Pitch coarse/fine, env depths, LFO depths, velo senses show a
+    sign (e.g. `+12`, `-7`, `0`). Pan shows **C / Lnn / Rnn** (center/left/right), not 0–127.
+
+### 5. Save to slot + reload round-trip
+
+12. **Save flow.** From the patch edit menu choose **Save to Slot** (`save_slot`). The list
+    shows all 64 user slots with their stored names (or `(empty)`); current names render as
+    `NN: NAME`. Select a slot and confirm — the working patch (including all tone edits and
+    knob-row changes) is written via `do_save_to_slot`; the UI returns to the patch screen.
+13. **Reload round-trip.** Load the slot just saved (User patch load path). Re-open the edited
+    section — the edited values persist. Edit a tone, save to a different slot, reload the
+    *original* preset — the original (un-edited) values reappear (edits only persist in saved
+    slots).
+
+### 6. Screen-reader announcements
+
+14. **Announcements fire.** Entering a level logs `[view] <label>`; selecting a param to edit
+    logs `[item] <name>: <value>` with the formatted (enum/signed) value. Confirm in the
+    console that level changes and edit-entry both announce. (No dedicated TTS channel exists
+    yet; these are the named hook points for a future screen-reader layer.)

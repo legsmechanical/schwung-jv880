@@ -82,6 +82,7 @@
         "chainable": true,
         "component_type": "sound_generator",
         "ui_hierarchy": {
+            "_note": "Mirror of build_ui_hierarchy() in jv880_plugin.cpp (the live path). Kept consistent at level-name/knob level; full param lists live in the C source.",
             "levels": {
                 "root": {
                     "name": "Mini-JV",
@@ -111,7 +112,23 @@
                         "macro_tvf_env_depth",
                         "macro_lfo_depth"
                     ]
-                }
+                },
+                "tone_selector": {
+                    "name": "Tones",
+                    "child_prefix": "nvram_tone_",
+                    "child_count": 4,
+                    "child_label": "Tone",
+                    "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"],
+                    "knob_labels": ["Cut", "Res", "Atk", "Dcy", "Sus", "Rel", "Lvl", "Pan"]
+                },
+                "tone_wave":   { "name": "Wave",     "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_pitch":  { "name": "Pitch",    "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_filter": { "name": "Filter",   "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_amp":    { "name": "Amp",      "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_lfo1":   { "name": "LFO 1",    "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_lfo2":   { "name": "LFO 2",    "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "tone_fx":     { "name": "FX Sends", "tone_section": true, "tone_prefix": "nvram_tone_", "knobs": ["cutofffrequency", "resonance", "tvaenvtime1", "tvaenvtime2", "tvaenvlevel3", "tvaenvtime4", "level", "pan"] },
+                "save_slot":   { "name": "Save to Slot", "items_param": "save_patch_slot_list", "select_param": "do_save_to_slot", "navigate_to": "patch", "knobs": [] }
             }
         },
         "default_forward_channel": 1,

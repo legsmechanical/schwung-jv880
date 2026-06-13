@@ -3120,16 +3120,15 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         }
                         return snprintf(buf, buf_len, "%d", (byte >> p->bit_shift) & p->bit_mask);
                     case TP_BOOL:
-                        return snprintf(buf, buf_len, "%s", (byte & (1 << p->bit_shift)) ? "On" : "Off");
+                        /* Return numeric index (0/1); the UI maps it to an enum
+                         * label via the chain_params "options" array. SET still
+                         * accepts both "On"/"Off" and numeric, so this is safe. */
+                        return snprintf(buf, buf_len, "%d", (byte & (1 << p->bit_shift)) ? 1 : 0);
                     case TP_ENUM:
-                        /* Special handling for filtermode and resonancemode */
-                        if (strcmp(paramName, "filtermode") == 0) {
-                            int v = (byte >> p->bit_shift) & p->bit_mask;
-                            const char *labels[] = {"Off", "LPF", "HPF"};
-                            return snprintf(buf, buf_len, "%s", labels[v < 3 ? v : 0]);
-                        }
+                        /* Return numeric index; UI formats via chain_params options.
+                         * resonancemode is a single 0x80 bit, others use mask. */
                         if (strcmp(paramName, "resonancemode") == 0) {
-                            return snprintf(buf, buf_len, "%s", (byte & 0x80) ? "Hard" : "Soft");
+                            return snprintf(buf, buf_len, "%d", (byte & 0x80) ? 1 : 0);
                         }
                         return snprintf(buf, buf_len, "%d", (byte >> p->bit_shift) & p->bit_mask);
                 }
@@ -3714,6 +3713,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         "{\"key\":\"nvram_patchCommon_choruslevel\",\"label\":\"Chorus\"},"
                         "{\"level\":\"tone_selector\",\"label\":\"Edit Tones\"},"
                         "{\"level\":\"patch_common\",\"label\":\"Common Settings\"},"
+                        "{\"level\":\"save_slot\",\"label\":\"Save to Slot\"},"
                         "{\"level\":\"expansions\",\"label\":\"Jump to Expansion\"}"
                     "]"
                 "},"
@@ -3734,29 +3734,115 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         "{\"key\":\"octave_transpose\",\"label\":\"Octave\"}"
                     "]"
                 "},"
+                /* Tone selector: child_count level with tone tabs (Left/Right) +
+                 * the always-live tone knob row. Its menu items are SECTION pages
+                 * (level nav), not inline params; clicking one persists the
+                 * selected tone (ui.js: selectedToneIndex) and descends. The tone
+                 * on/off switch stays inline here for quick toggling.
+                 * Knob row (every tone level): Cut Res Atk Dcy Sus Rel Lvl Pan. */
                 "\"tone_selector\":{"
                     "\"label\":\"Tones\","
                     "\"children\":null,"
                     "\"child_prefix\":\"nvram_tone_\","
                     "\"child_count\":4,"
                     "\"child_label\":\"Tone\","
-                    "\"knobs\":[\"level\",\"pan\",\"cutofffrequency\",\"resonance\",\"lfo1pitchdepth\",\"lfo1tvfdepth\",\"tvaenvtime1\",\"tvaenvtime2\"],"
-                    "\"knob_labels\":[\"Lvl\",\"Pan\",\"Cut\",\"Res\",\"LPt\",\"LFl\",\"AT1\",\"AT2\"],"
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
                     "\"params\":["
-                        "\"toneswitch\",\"wavegroup\",\"wavenumber\","
-                        "\"level\",\"pan\",\"levelkeyfollow\",\"panningkeyfollow\","
-                        "\"cutofffrequency\",\"resonance\",\"filtermode\",\"resonancemode\",\"cutoffkeyfollow\","
-                        "\"pitchcoarse\",\"pitchfine\",\"randompitchdepth\",\"pitchkeyfollow\","
-                        "\"lfo1form\",\"lfo1rate\",\"lfo1delay\",\"lfo1pitchdepth\",\"lfo1tvfdepth\",\"lfo1tvadepth\","
-                        "\"lfo2form\",\"lfo2rate\",\"lfo2delay\",\"lfo2pitchdepth\",\"lfo2tvfdepth\",\"lfo2tvadepth\","
-                        "\"penvdepth\",\"penvtime1\",\"penvlevel1\",\"penvtime2\",\"penvlevel2\",\"penvtime3\",\"penvlevel3\",\"penvtime4\",\"penvlevel4\","
-                        "\"tvfenvdepth\",\"tvfenvtime1\",\"tvfenvlevel1\",\"tvfenvtime2\",\"tvfenvlevel2\",\"tvfenvtime3\",\"tvfenvlevel3\",\"tvfenvtime4\",\"tvfenvlevel4\","
-                        "\"tvaenvtime1\",\"tvaenvlevel1\",\"tvaenvtime2\",\"tvaenvlevel2\",\"tvaenvtime3\",\"tvaenvlevel3\",\"tvaenvtime4\","
-                        "\"velocityrangelower\",\"velocityrangeupper\","
-                        "\"tonedelaymode\",\"tonedelaytime\","
-                        "\"fxmswitch\",\"fxmdepth\","
-                        "\"drylevel\",\"reverbsendlevel\",\"chorussendlevel\""
+                        "\"toneswitch\","
+                        "{\"level\":\"tone_wave\",\"label\":\"Wave\"},"
+                        "{\"level\":\"tone_pitch\",\"label\":\"Pitch\"},"
+                        "{\"level\":\"tone_filter\",\"label\":\"Filter\"},"
+                        "{\"level\":\"tone_amp\",\"label\":\"Amp\"},"
+                        "{\"level\":\"tone_lfo1\",\"label\":\"LFO 1\"},"
+                        "{\"level\":\"tone_lfo2\",\"label\":\"LFO 2\"},"
+                        "{\"level\":\"tone_fx\",\"label\":\"FX Sends\"}"
                     "]"
+                "},"
+                /* Tone section pages: tone_section + tone_prefix make ui.js
+                 * resolve every key as nvram_tone_<selectedToneIndex>_<param>.
+                 * Each carries the same knob row so the encoders stay live and
+                 * follow the selected tone on every sub-page. */
+                "\"tone_wave\":{"
+                    "\"label\":\"Wave\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":[\"toneswitch\",\"wavegroup\",\"wavenumber\",\"fxmswitch\",\"fxmdepth\"]"
+                "},"
+                "\"tone_pitch\":{"
+                    "\"label\":\"Pitch\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":["
+                        "\"pitchcoarse\",\"pitchfine\",\"pitchkeyfollow\","
+                        "\"penvdepth\",\"penvtime1\",\"penvtime2\",\"penvtime3\",\"penvtime4\","
+                        "\"penvlevel1\",\"penvlevel2\",\"penvlevel3\",\"penvlevel4\""
+                    "]"
+                "},"
+                "\"tone_filter\":{"
+                    "\"label\":\"Filter\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":["
+                        "\"filtermode\",\"cutofffrequency\",\"resonance\",\"cutoffkeyfollow\",\"resonancemode\","
+                        "\"tvfenvdepth\",\"tvfenvvelocitylevelsense\","
+                        "\"tvfenvtime1\",\"tvfenvtime2\",\"tvfenvtime3\",\"tvfenvtime4\","
+                        "\"tvfenvlevel1\",\"tvfenvlevel2\",\"tvfenvlevel3\",\"tvfenvlevel4\""
+                    "]"
+                "},"
+                "\"tone_amp\":{"
+                    "\"label\":\"Amp\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":["
+                        "\"level\",\"pan\",\"tvaenvvelocitylevelsense\",\"tvaenvvelocitycurve\","
+                        "\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvtime3\",\"tvaenvtime4\","
+                        "\"tvaenvlevel1\",\"tvaenvlevel2\",\"tvaenvlevel3\","
+                        "\"tonedelaymode\",\"tonedelaytime\""
+                    "]"
+                "},"
+                "\"tone_lfo1\":{"
+                    "\"label\":\"LFO 1\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":["
+                        "\"lfo1form\",\"lfo1rate\",\"lfo1delay\",\"lfo1fadetime\",\"lfo1offset\",\"lfo1synchro\","
+                        "\"lfo1pitchdepth\",\"lfo1tvfdepth\",\"lfo1tvadepth\""
+                    "]"
+                "},"
+                "\"tone_lfo2\":{"
+                    "\"label\":\"LFO 2\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":["
+                        "\"lfo2form\",\"lfo2rate\",\"lfo2delay\",\"lfo2fadetime\","
+                        "\"lfo2pitchdepth\",\"lfo2tvfdepth\",\"lfo2tvadepth\""
+                    "]"
+                "},"
+                "\"tone_fx\":{"
+                    "\"label\":\"FX Sends\",\"children\":null,"
+                    "\"tone_section\":true,\"tone_prefix\":\"nvram_tone_\","
+                    "\"knobs\":[\"cutofffrequency\",\"resonance\",\"tvaenvtime1\",\"tvaenvtime2\",\"tvaenvlevel3\",\"tvaenvtime4\",\"level\",\"pan\"],"
+                    "\"knob_labels\":[\"Cut\",\"Res\",\"Atk\",\"Dcy\",\"Sus\",\"Rel\",\"Lvl\",\"Pan\"],"
+                    "\"params\":[\"drylevel\",\"reverbsendlevel\",\"chorussendlevel\"]"
+                "},"
+                /* Save to user slot: items_param lists all 64 slots with their
+                 * stored names; selecting one fires do_save_to_slot then returns
+                 * to the patch edit menu via navigate_to. */
+                "\"save_slot\":{"
+                    "\"label\":\"Save to Slot\","
+                    "\"items_param\":\"save_patch_slot_list\","
+                    "\"select_param\":\"do_save_to_slot\","
+                    "\"navigate_to\":\"patch\","
+                    "\"children\":null,"
+                    "\"knobs\":[],"
+                    "\"params\":[]"
                 "},"
                 "\"performance\":{"
                     "\"list_param\":\"performance\","
@@ -3842,11 +3928,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"nvram_patchCommon_analogfeel\",\"name\":\"Analog Feel\",\"type\":\"int\",\"min\":0,\"max\":127},"
             /* Tone params - Wave */
             "{\"key\":\"toneswitch\",\"name\":\"Tone Switch\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-            "{\"key\":\"wavegroup\",\"name\":\"Wave Group\",\"type\":\"int\",\"min\":0,\"max\":3},"
+            "{\"key\":\"wavegroup\",\"name\":\"Wave Group\",\"type\":\"enum\",\"min\":0,\"max\":3,\"options\":[\"INT-A\",\"INT-B\",\"EXP-A\",\"EXP-B\"]},"
             "{\"key\":\"wavenumber\",\"name\":\"Wave Number\",\"type\":\"int\",\"min\":0,\"max\":255},"
-            /* Tone params - Level/Pan */
+            /* Tone params - Level/Pan (pan is centered: C / Lnn / Rnn) */
             "{\"key\":\"level\",\"name\":\"Level\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"int\",\"min\":-64,\"max\":63,\"display\":\"pan\"},"
             "{\"key\":\"levelkeyfollow\",\"name\":\"Level KF\",\"type\":\"int\",\"min\":0,\"max\":15},"
             "{\"key\":\"panningkeyfollow\",\"name\":\"Pan KF\",\"type\":\"int\",\"min\":0,\"max\":15},"
             /* Tone params - Filter */
@@ -3855,37 +3941,43 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"filtermode\",\"name\":\"Filter Mode\",\"type\":\"enum\",\"options\":[\"Off\",\"LPF\",\"HPF\"]},"
             "{\"key\":\"resonancemode\",\"name\":\"Reso Mode\",\"type\":\"enum\",\"options\":[\"Soft\",\"Hard\"]},"
             "{\"key\":\"cutoffkeyfollow\",\"name\":\"Cutoff KF\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            /* Tone params - Pitch */
-            "{\"key\":\"pitchcoarse\",\"name\":\"Pitch Coarse\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"pitchfine\",\"name\":\"Pitch Fine\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            /* Tone params - Pitch (coarse/fine signed: centered display) */
+            "{\"key\":\"pitchcoarse\",\"name\":\"Pitch Coarse\",\"type\":\"int\",\"min\":-48,\"max\":48,\"display\":\"signed\"},"
+            "{\"key\":\"pitchfine\",\"name\":\"Pitch Fine\",\"type\":\"int\",\"min\":-50,\"max\":50,\"display\":\"signed\"},"
             "{\"key\":\"randompitchdepth\",\"name\":\"Random Pitch\",\"type\":\"int\",\"min\":0,\"max\":7},"
             "{\"key\":\"pitchkeyfollow\",\"name\":\"Pitch KF\",\"type\":\"int\",\"min\":0,\"max\":15},"
-            /* Tone params - LFO1 */
-            "{\"key\":\"lfo1form\",\"name\":\"LFO1 Wave\",\"type\":\"int\",\"min\":0,\"max\":5},"
+            /* Tone params - LFO1 (form: TRI SIN SAW SQU RND1 RND2; offset enum;
+             * sync toggle; pitch/tvf/tva depths are signed) */
+            "{\"key\":\"lfo1form\",\"name\":\"LFO1 Wave\",\"type\":\"enum\",\"min\":0,\"max\":5,\"options\":[\"TRI\",\"SIN\",\"SAW\",\"SQU\",\"RND1\",\"RND2\"]},"
             "{\"key\":\"lfo1rate\",\"name\":\"LFO1 Rate\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"lfo1delay\",\"name\":\"LFO1 Delay\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo1pitchdepth\",\"name\":\"LFO1 Pitch\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo1tvfdepth\",\"name\":\"LFO1 Filter\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo1tvadepth\",\"name\":\"LFO1 Amp\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"lfo1fadetime\",\"name\":\"LFO1 Fade\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"lfo1offset\",\"name\":\"LFO1 Offset\",\"type\":\"enum\",\"min\":0,\"max\":4,\"options\":[\"-100\",\"-50\",\"0\",\"+50\",\"+100\"]},"
+            "{\"key\":\"lfo1synchro\",\"name\":\"LFO1 Sync\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
+            "{\"key\":\"lfo1pitchdepth\",\"name\":\"LFO1 Pitch\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"lfo1tvfdepth\",\"name\":\"LFO1 Filter\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"lfo1tvadepth\",\"name\":\"LFO1 Amp\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             /* Tone params - LFO2 */
-            "{\"key\":\"lfo2form\",\"name\":\"LFO2 Wave\",\"type\":\"int\",\"min\":0,\"max\":5},"
+            "{\"key\":\"lfo2form\",\"name\":\"LFO2 Wave\",\"type\":\"enum\",\"min\":0,\"max\":5,\"options\":[\"TRI\",\"SIN\",\"SAW\",\"SQU\",\"RND1\",\"RND2\"]},"
             "{\"key\":\"lfo2rate\",\"name\":\"LFO2 Rate\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"lfo2delay\",\"name\":\"LFO2 Delay\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo2pitchdepth\",\"name\":\"LFO2 Pitch\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo2tvfdepth\",\"name\":\"LFO2 Filter\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"lfo2tvadepth\",\"name\":\"LFO2 Amp\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            /* Tone params - Pitch Envelope */
-            "{\"key\":\"penvdepth\",\"name\":\"P.Env Depth\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"lfo2fadetime\",\"name\":\"LFO2 Fade\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"lfo2pitchdepth\",\"name\":\"LFO2 Pitch\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"lfo2tvfdepth\",\"name\":\"LFO2 Filter\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"lfo2tvadepth\",\"name\":\"LFO2 Amp\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            /* Tone params - Pitch Envelope (depth + levels are signed) */
+            "{\"key\":\"penvdepth\",\"name\":\"P.Env Depth\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             "{\"key\":\"penvtime1\",\"name\":\"P.Env T1\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"penvlevel1\",\"name\":\"P.Env L1\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"penvlevel1\",\"name\":\"P.Env L1\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             "{\"key\":\"penvtime2\",\"name\":\"P.Env T2\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"penvlevel2\",\"name\":\"P.Env L2\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"penvlevel2\",\"name\":\"P.Env L2\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             "{\"key\":\"penvtime3\",\"name\":\"P.Env T3\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"penvlevel3\",\"name\":\"P.Env L3\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"penvlevel3\",\"name\":\"P.Env L3\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             "{\"key\":\"penvtime4\",\"name\":\"P.Env T4\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"penvlevel4\",\"name\":\"P.Env L4\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            /* Tone params - Filter Envelope */
-            "{\"key\":\"tvfenvdepth\",\"name\":\"F.Env Depth\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"penvlevel4\",\"name\":\"P.Env L4\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            /* Tone params - Filter Envelope (depth + velo sense signed) */
+            "{\"key\":\"tvfenvdepth\",\"name\":\"F.Env Depth\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"tvfenvvelocitylevelsense\",\"name\":\"F.Env Velo\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
             "{\"key\":\"tvfenvtime1\",\"name\":\"F.Env T1\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"tvfenvlevel1\",\"name\":\"F.Env L1\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"tvfenvtime2\",\"name\":\"F.Env T2\",\"type\":\"int\",\"min\":0,\"max\":127},"
@@ -3902,10 +3994,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"tvaenvtime3\",\"name\":\"A.Env T3\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"tvaenvlevel3\",\"name\":\"A.Env L3\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"tvaenvtime4\",\"name\":\"A.Env T4\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"tvaenvvelocitylevelsense\",\"name\":\"A.Env Velo\",\"type\":\"int\",\"min\":-63,\"max\":63,\"display\":\"signed\"},"
+            "{\"key\":\"tvaenvvelocitycurve\",\"name\":\"A.Env Curve\",\"type\":\"int\",\"min\":0,\"max\":6},"
             /* Tone params - Velocity/Delay */
             "{\"key\":\"velocityrangelower\",\"name\":\"Vel Lo\",\"type\":\"int\",\"min\":1,\"max\":127},"
             "{\"key\":\"velocityrangeupper\",\"name\":\"Vel Hi\",\"type\":\"int\",\"min\":1,\"max\":127},"
-            "{\"key\":\"tonedelaymode\",\"name\":\"Delay Mode\",\"type\":\"int\",\"min\":0,\"max\":3},"
+            "{\"key\":\"tonedelaymode\",\"name\":\"Delay Mode\",\"type\":\"enum\",\"min\":0,\"max\":3,\"options\":[\"Normal\",\"Hold\",\"Play-Mate\",\"Clock\"]},"
             "{\"key\":\"tonedelaytime\",\"name\":\"Delay Time\",\"type\":\"int\",\"min\":0,\"max\":127},"
             /* Tone params - FXM */
             "{\"key\":\"fxmswitch\",\"name\":\"FXM\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"

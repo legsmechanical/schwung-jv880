@@ -46,6 +46,12 @@ let menuScroll = 0;         // Scroll offset for long menus
 // For child selectors (tones/parts)
 let selectedChildIndex = 0;
 
+// Persisted tone index for tone-section sub-levels (Wave/Pitch/Filter/...).
+// Set when a tone is chosen in the tone_selector level; tone_section levels
+// resolve their nvram_tone_<N>_<param> keys against this index so the section
+// pages edit the SELECTED tone even though they are separate levels.
+let selectedToneIndex = 0;
+
 // For list browsers (presets, performances)
 let listIndex = 0;
 let listCount = 0;
@@ -146,6 +152,7 @@ function navigateToLevel(levelName) {
     }
 
     needsRedraw = true;
+    announceView(currentLevel.label || levelName);
     console.log("Navigated to level: " + levelName);
 }
 
@@ -174,6 +181,18 @@ function switchMode(newMode) {
     }
 }
 
+/* === Screen-reader announcements ===
+ * The host has no dedicated TTS channel today, so these route through the same
+ * console.log the rest of the UI uses. They give a single, named hook point
+ * (matching the platform convention) that a screen-reader layer can later
+ * intercept without touching call sites — no new subsystem is introduced. */
+function announceView(label) {
+    console.log("[view] " + label);
+}
+function announceMenuItem(label, value) {
+    console.log("[item] " + label + (value !== undefined && value !== '' ? ": " + value : ""));
+}
+
 /* === Parameter Handling === */
 function getParamMeta(key) {
     return chainParamsMap[key] || { name: key, type: 'int', min: 0, max: 127 };
@@ -183,6 +202,11 @@ function getFullParamKey(key) {
     // Handle child prefix (e.g., nvram_tone_0_cutofffrequency)
     if (currentLevel.child_prefix) {
         return currentLevel.child_prefix + selectedChildIndex + '_' + key;
+    }
+    // Tone-section sub-levels (Wave/Pitch/Filter/Amp/LFO/FX) resolve against the
+    // persisted selected tone index so they edit the tone chosen one level up.
+    if (currentLevel.tone_section) {
+        return currentLevel.tone_prefix + selectedToneIndex + '_' + key;
     }
     return key;
 }
@@ -333,11 +357,22 @@ function handleChildSelectorInput(cc, value) {
         menuIndex = Math.min(params.length - 1, menuIndex + 1);
         needsRedraw = true;
     } else if (cc === CC_JOG_CLICK) {
-        // Start editing selected param
-        const paramKey = typeof params[menuIndex] === 'string' ? params[menuIndex] : params[menuIndex].key;
+        const item = params[menuIndex];
+        // Navigation item (e.g. a tone section page): persist the selected tone
+        // so the sub-level edits this tone, then descend.
+        if (item && typeof item === 'object' && item.level) {
+            selectedToneIndex = selectedChildIndex;
+            announceView(item.label || item.level);
+            navigateToLevel(item.level);
+            return;
+        }
+        // Otherwise start editing the selected param for the current tone.
+        const paramKey = typeof item === 'string' ? item : (item && item.key);
         if (paramKey) {
             editingParam = paramKey;
             editingValue = getParamValue(paramKey);
+            announceMenuItem(getParamMeta(paramKey).name || paramKey,
+                             formatValue(editingValue, getParamMeta(paramKey)));
             needsRedraw = true;
         }
     }
@@ -360,6 +395,8 @@ function handleMenuInput(cc, value) {
                 // Simple param key - start editing
                 editingParam = item;
                 editingValue = getParamValue(item);
+                announceMenuItem(getParamMeta(item).name || item,
+                                 formatValue(editingValue, getParamMeta(item)));
             } else if (item.level) {
                 // Navigation to sublevel
                 navigateToLevel(item.level);
@@ -367,6 +404,8 @@ function handleMenuInput(cc, value) {
                 // Param with label - start editing
                 editingParam = item.key;
                 editingValue = getParamValue(item.key);
+                announceMenuItem(item.label || getParamMeta(item.key).name || item.key,
+                                 formatValue(editingValue, getParamMeta(item.key)));
             }
             needsRedraw = true;
         }
@@ -548,14 +587,27 @@ function drawChildSelector() {
     for (let i = 0; i < visibleItems && startIdx + i < params.length; i++) {
         const idx = startIdx + i;
         const param = params[idx];
+
+        const y = 14 + i * 10;
+
+        // Section navigation item (e.g. Wave/Pitch/...): show "Label >", no value.
+        if (param && typeof param === 'object' && param.level) {
+            const navLabel = (param.label || param.level) + ' >';
+            if (idx === menuIndex) {
+                display.fillRect(0, y - 1, SCREEN_WIDTH, 10, 1);
+                display.drawText(4, y, navLabel, 0);
+            } else {
+                display.drawText(4, y, navLabel, 1);
+            }
+            continue;
+        }
+
         const paramKey = typeof param === 'string' ? param : param.key;
         const meta = getParamMeta(paramKey);
 
         const t1 = Date.now();
         const value = getParamValue(paramKey);
         getParamTime += Date.now() - t1;
-
-        const y = 14 + i * 10;
 
         const label = meta.name || paramKey;
         const valueStr = formatValue(value, meta);
@@ -640,6 +692,17 @@ function drawMenu() {
 function formatValue(value, meta) {
     if (meta.options) {
         return meta.options[value] || String(value);
+    }
+    // Pan-style display: 0 is center, negatives L, positives R (e.g. L23 / C / R12).
+    if (meta.display === 'pan') {
+        if (value === 0) return 'C';
+        return value < 0 ? 'L' + (-value) : 'R' + value;
+    }
+    // Signed/centered params: show an explicit + on positives so polarity reads
+    // clearly (e.g. pitch +3, env depth -12). The C plugin already returns the
+    // value pre-centered, so no offset math is needed here.
+    if (meta.display === 'signed' && value > 0) {
+        return '+' + value;
     }
     return String(value);
 }
