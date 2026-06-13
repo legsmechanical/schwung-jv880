@@ -89,8 +89,14 @@
             "octave_transpose"
           ],
           "knobs": [
-            "preset",
-            "octave_transpose"
+            "macro_cutoff",
+            "macro_resonance",
+            "macro_attack",
+            "macro_decay",
+            "macro_release",
+            "macro_tvf_env_depth",
+            "nvram_patchCommon_reverblevel",
+            "nvram_patchCommon_choruslevel"
           ]
         }
       }
@@ -129,6 +135,78 @@
         "type": "int",
         "min": -4,
         "max": 4,
+        "default": 0
+      },
+      {
+        "key": "macro_cutoff",
+        "name": "Cutoff",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "macro_resonance",
+        "name": "Resonance",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "macro_attack",
+        "name": "Attack",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "macro_decay",
+        "name": "Decay",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "macro_release",
+        "name": "Release",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "macro_tvf_env_depth",
+        "name": "TVF Env",
+        "type": "int",
+        "min": -63,
+        "max": 63,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "nvram_patchCommon_reverblevel",
+        "name": "Reverb",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
+        "default": 0
+      },
+      {
+        "key": "nvram_patchCommon_choruslevel",
+        "name": "Chorus",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "step": 1,
         "default": 0
       }
     ]

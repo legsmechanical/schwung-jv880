@@ -148,3 +148,40 @@ From jv880_juce Tone struct (84 bytes per tone):
 **Sound glitches when adjusting:**
 - SysEx message timing may need adjustment
 - Check if emulator is keeping up with parameter changes
+
+---
+
+## Phase A — Performance-page macros (absolute-anchored)
+
+On-device manual test checklist for the 8 root performance knobs (Cutoff, Resonance,
+Attack, Decay, Release, TVF Env macros + Reverb, Chorus levels). Default macro mode is
+`absolute` (MACRO_ABSOLUTE_ANCHORED).
+
+1. **Knob shows patch value on load.** Select a patch. Each macro knob (1–6) must display
+   the *anchor tone's* value — the lowest-numbered enabled tone (toneswitch On). Confirm
+   Cutoff reads the same as Tone-1 `cutofffrequency` (when Tone 1 is enabled). Reverb/Chorus
+   knobs (7–8) show the patch-common levels.
+
+2. **Turn Cutoff → all enabled tones move, offsets preserved.** Pick a patch where tones
+   differ (e.g. Tone 2 darker than Tone 1). Turn the Cutoff macro up by N. Verify every
+   *enabled* tone's `cutofffrequency` increased by N (clamped 0–127) and inter-tone
+   differences are preserved (anchor tracks the knob exactly). Disabled tones (toneswitch
+   Off) must NOT change. Confirm audibly the timbre opens up.
+
+3. **Switch patch → knob re-reads, no reset artifacts.** Change to another patch. Each macro
+   knob immediately reflects the new patch's anchor-tone values. No leftover offset is
+   applied; nothing audibly "snaps" or resets. Switch back — original (un-edited) patch
+   values reappear (edits to a temp patch are not persisted across reload unless saved).
+
+4. **macro_mode=relative restores old behavior.** Set param `macro_mode` = `relative`.
+   Macro knobs now read 0 (offset) and adding an offset shifts all 4 tones non-destructively
+   via SysEx without writing NVRAM; the offset clears on program change. Set
+   `macro_mode` = `absolute` to return to the default. Verify `get_param("macro_mode")`
+   reports the current mode string. This A/B switch requires no rebuild and no UI change.
+
+5. **save_to_slot captures edits.** In absolute mode, edit a macro (e.g. raise Cutoff), then
+   `do_save_to_slot` to a user slot. Reload that slot — the edited tone values persist.
+
+6. **State round-trip.** Save chain state (autosave), reload. `macro_mode` and the edited
+   working patch are restored from the state JSON (version 2). A v1 state with no
+   `macro_mode` field loads with the default (absolute).

@@ -321,6 +321,66 @@ static const ToneParamEntry* find_tone_param(const char *name) {
 }
 
 /* ========================================================================
+ * MACRO ABSTRACTION
+ *
+ * All 6 cross-tone macros funnel through exactly one read/write pair
+ * (macro_read / macro_write, defined later once the instance type and the
+ * per-tone write helper are visible). The behavior is selected by a single
+ * runtime mode:
+ *
+ *   MACRO_ABSOLUTE_ANCHORED  (default) - display = anchor tone's stored value
+ *       (anchor = lowest-numbered enabled tone, else tone 0); writing applies
+ *       delta = new - anchor_value to every enabled tone via the normal
+ *       nvram_tone_* write path. No hidden state; survives patch reload only
+ *       as ordinary tone edits; do_save_to_slot captures it.
+ *
+ *   MACRO_RELATIVE_RESET - the legacy behavior: an offset stored per macro in
+ *       the instance, applied (non-destructively) over the tones' base values
+ *       via SysEx, and cleared on program change.
+ *
+ * Acceptance: switching modes is a one-string change with no other code or
+ * table edits. macro_def_t below is the single source of truth for the 6 macros.
+ * ======================================================================== */
+
+typedef enum {
+    MACRO_ABSOLUTE_ANCHORED,
+    MACRO_RELATIVE_RESET
+} macro_mode_t;
+
+#define MACRO_MODE_DEFAULT MACRO_ABSOLUTE_ANCHORED
+
+typedef struct {
+    const char *key;            /* macro key suffix, e.g. "cutoff" (full key: macro_cutoff) */
+    const char *display_name;   /* short UI label */
+    const char *tone_param;     /* backing nvram_tone_* parameter name */
+    int min;                    /* display/clamp min */
+    int max;                    /* display/clamp max */
+} macro_def_t;
+
+/* The 6 macros. Ranges match the backing tone params:
+ *   cutofffrequency/resonance/tvaenvtime{1,2,4}: unsigned 0..127
+ *   tvfenvdepth: signed -63..63
+ */
+static const macro_def_t MACRO_DEFS[] = {
+    {"cutoff",        "Cutoff",      "cutofffrequency",   0, 127},
+    {"resonance",     "Resonance",   "resonance",         0, 127},
+    {"attack",        "Attack",      "tvaenvtime1",       0, 127},
+    {"decay",         "Decay",       "tvaenvtime2",       0, 127},
+    {"release",       "Release",     "tvaenvtime4",       0, 127},
+    {"tvf_env_depth", "TVF Env",     "tvfenvdepth",     -63,  63},
+};
+#define NUM_MACROS (sizeof(MACRO_DEFS) / sizeof(MACRO_DEFS[0]))
+
+static int clamp_int(int value, int min_val, int max_val);  /* defined below */
+
+static const macro_def_t* find_macro(const char *key_suffix) {
+    for (size_t i = 0; i < NUM_MACROS; i++) {
+        if (strcmp(key_suffix, MACRO_DEFS[i].key) == 0) return &MACRO_DEFS[i];
+    }
+    return NULL;
+}
+
+/* ========================================================================
  * SHARED HELPER FUNCTIONS
  * ======================================================================== */
 
@@ -514,7 +574,11 @@ typedef struct {
     int render_count;
     int min_buffer_level;
 
-    /* Macro offsets (relative, applied across all 4 tones) */
+    /* Macro behavior selector (absolute-anchored vs relative-reset).
+     * Runtime-switchable via set_param("macro_mode", "absolute"|"relative"). */
+    macro_mode_t macro_mode;
+
+    /* Macro offsets (used only in MACRO_RELATIVE_RESET mode; applied across all 4 tones) */
     int macro_cutoff;        /* offset for cutofffrequency */
     int macro_resonance;     /* offset for resonance */
     int macro_attack;        /* offset for tvaenvtime1 */
@@ -1292,6 +1356,9 @@ static void* v2_create_instance(const char *module_dir, const char *json_default
         inst->part_patchbank[i] = -1;
     }
 
+    /* Macro semantics default (calloc already zeroes this; set explicitly for clarity) */
+    inst->macro_mode = MACRO_MODE_DEFAULT;
+
     strncpy(inst->module_dir, module_dir, sizeof(inst->module_dir) - 1);
     fprintf(stderr, "JV880 v2: Loading from %s\n", module_dir);
 
@@ -1837,6 +1904,116 @@ static void v2_apply_macro(jv880_instance_t *inst, const char *tone_param_name, 
     }
 }
 
+/* v2: Read a TP_BYTE tone param's stored display value from NVRAM.
+ * Returns the signed (signed_param==1) or unsigned (else) value as displayed.
+ * Used by macro_read and by absolute macro_write to compute per-tone deltas. */
+static int v2_read_tone_byte_param(jv880_instance_t *inst, int toneIdx,
+                                   const ToneParamEntry *p) {
+    int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
+    uint8_t raw = inst->mcu->nvram[toneBase + p->nvram_offset];
+    if (p->signed_param == 1) return (int)(int8_t)raw;
+    return (int)raw;
+}
+
+/* v2: Write a single TP_BYTE tone param (NVRAM + DT1 SysEx) given a display
+ * value, mirroring the TP_BYTE branch in v2_set_param. Reuses v2_queue_tone_sysex
+ * so no SysEx building is duplicated. Handles unsigned (0..127) and
+ * signed_param==1 (-63..63, +64 SysEx offset). Macros only touch such params. */
+static void v2_write_tone_byte_param(jv880_instance_t *inst, int toneIdx,
+                                     const ToneParamEntry *p, int value) {
+    int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
+    uint8_t *b = &inst->mcu->nvram[toneBase + p->nvram_offset];
+    if (p->signed_param == 1) {
+        int v = clamp_int(value, -63, 63);
+        *b = (uint8_t)(int8_t)v;
+        v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v + 64, p->two_byte);
+    } else {
+        int v = clamp_int(value, 0, 127);
+        *b = (uint8_t)v;
+        v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+    }
+}
+
+/* v2: True if a tone's toneswitch bit is set (tone enabled).
+ * toneswitch lives at nvram_offset 0, bit 7 of the tone block. */
+static int v2_tone_enabled(jv880_instance_t *inst, int toneIdx) {
+    const ToneParamEntry *sw = find_tone_param("toneswitch");
+    if (!sw) return 1;
+    int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
+    uint8_t raw = inst->mcu->nvram[toneBase + sw->nvram_offset];
+    return (raw & (1 << sw->bit_shift)) ? 1 : 0;
+}
+
+/* v2: Anchor tone = lowest-numbered enabled tone, else tone 0. */
+static int v2_macro_anchor_tone(jv880_instance_t *inst) {
+    for (int t = 0; t < 4; t++) {
+        if (v2_tone_enabled(inst, t)) return t;
+    }
+    return 0;
+}
+
+/* Accessor for the per-macro relative offset store (RELATIVE_RESET mode). */
+static int* v2_macro_offset_slot(jv880_instance_t *inst, const macro_def_t *m) {
+    if (strcmp(m->key, "cutoff") == 0)        return &inst->macro_cutoff;
+    if (strcmp(m->key, "resonance") == 0)     return &inst->macro_resonance;
+    if (strcmp(m->key, "attack") == 0)        return &inst->macro_attack;
+    if (strcmp(m->key, "decay") == 0)         return &inst->macro_decay;
+    if (strcmp(m->key, "release") == 0)       return &inst->macro_release;
+    if (strcmp(m->key, "tvf_env_depth") == 0) return &inst->macro_tvf_env_depth;
+    return NULL;
+}
+
+/* ========================================================================
+ * THE MACRO FUNNEL: macro_read / macro_write
+ * Every macro get_param routes through macro_read; every macro set_param
+ * routes through macro_write. Behavior branches solely on inst->macro_mode.
+ * ======================================================================== */
+
+/* macro_read: returns the value to display on the knob.
+ *   ABSOLUTE_ANCHORED -> anchor tone's stored value.
+ *   RELATIVE_RESET    -> the current stored offset for this macro. */
+static int macro_read(jv880_instance_t *inst, const macro_def_t *m) {
+    if (!inst || !inst->mcu || !m) return 0;
+    if (inst->macro_mode == MACRO_RELATIVE_RESET) {
+        int *slot = v2_macro_offset_slot(inst, m);
+        return slot ? *slot : 0;
+    }
+    /* ABSOLUTE_ANCHORED */
+    const ToneParamEntry *p = find_tone_param(m->tone_param);
+    if (!p) return 0;
+    return v2_read_tone_byte_param(inst, v2_macro_anchor_tone(inst), p);
+}
+
+/* macro_write: applies the macro semantics for the given display value.
+ *   ABSOLUTE_ANCHORED -> delta = value - anchor_value; for every enabled tone
+ *       write clamp(tone_value + delta, min, max) via the normal nvram+SysEx path.
+ *   RELATIVE_RESET    -> store offset and apply it non-destructively (legacy). */
+static void macro_write(jv880_instance_t *inst, const macro_def_t *m, int value) {
+    if (!inst || !inst->mcu || !m) return;
+
+    if (inst->macro_mode == MACRO_RELATIVE_RESET) {
+        int *slot = v2_macro_offset_slot(inst, m);
+        int offset = clamp_int(value, -64, 63);
+        if (slot) *slot = offset;
+        v2_apply_macro(inst, m->tone_param, offset);
+        return;
+    }
+
+    /* ABSOLUTE_ANCHORED */
+    const ToneParamEntry *p = find_tone_param(m->tone_param);
+    if (!p) return;
+    int target = clamp_int(value, m->min, m->max);
+    int anchor = v2_macro_anchor_tone(inst);
+    int anchor_value = v2_read_tone_byte_param(inst, anchor, p);
+    int delta = target - anchor_value;
+    for (int t = 0; t < 4; t++) {
+        if (!v2_tone_enabled(inst, t)) continue;
+        int cur = v2_read_tone_byte_param(inst, t, p);
+        int nv = clamp_int(cur + delta, m->min, m->max);
+        v2_write_tone_byte_param(inst, t, p, nv);
+    }
+}
+
 /* v2: Helper to queue SysEx for part parameter changes
  * two_byte: if true, sends MSB/LSB format (for 0-255 range params like patchnumber)
  *           MSB = (value >> 7) & 0x7F, LSB = value & 0x7F
@@ -2151,6 +2328,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (json_get_number(val, "expansion_bank_offset", &f) == 0) {
             inst->expansion_bank_offset = (int)f;
         }
+        /* Restore macro semantics mode (absent in v1 state -> keep default). */
+        if (json_get_number(val, "macro_mode", &f) == 0) {
+            inst->macro_mode = ((int)f == MACRO_RELATIVE_RESET)
+                ? MACRO_RELATIVE_RESET : MACRO_ABSOLUTE_ANCHORED;
+        }
         /* Restore preset or performance based on mode */
         if (inst->performance_mode) {
             if (json_get_number(val, "performance", &f) == 0) {
@@ -2425,30 +2607,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 }
             }
         }
-    } else if (strncmp(key, "macro_", 6) == 0 && inst->mcu) {
-        /* Macro controls: virtual params that offset all 4 tones simultaneously */
-        const char *macroName = key + 6;
-        int offset = clamp_int(atoi(val), -64, 63);
-
-        if (strcmp(macroName, "cutoff") == 0) {
-            inst->macro_cutoff = offset;
-            v2_apply_macro(inst, "cutofffrequency", offset);
-        } else if (strcmp(macroName, "resonance") == 0) {
-            inst->macro_resonance = offset;
-            v2_apply_macro(inst, "resonance", offset);
-        } else if (strcmp(macroName, "attack") == 0) {
-            inst->macro_attack = offset;
-            v2_apply_macro(inst, "tvaenvtime1", offset);
-        } else if (strcmp(macroName, "decay") == 0) {
-            inst->macro_decay = offset;
-            v2_apply_macro(inst, "tvaenvtime2", offset);
-        } else if (strcmp(macroName, "release") == 0) {
-            inst->macro_release = offset;
-            v2_apply_macro(inst, "tvaenvtime4", offset);
-        } else if (strcmp(macroName, "tvf_env_depth") == 0) {
-            inst->macro_tvf_env_depth = offset;
-            v2_apply_macro(inst, "tvfenvdepth", offset);
+    } else if (strcmp(key, "macro_mode") == 0) {
+        /* Runtime A/B switch for macro semantics (not surfaced in UI). */
+        if (strcmp(val, "relative") == 0 || strcmp(val, "MACRO_RELATIVE_RESET") == 0) {
+            inst->macro_mode = MACRO_RELATIVE_RESET;
+        } else {
+            inst->macro_mode = MACRO_ABSOLUTE_ANCHORED;
         }
+    } else if (strncmp(key, "macro_", 6) == 0 && inst->mcu) {
+        /* All macro behavior funnels through macro_write; semantics branch on mode. */
+        const macro_def_t *m = find_macro(key + 6);
+        if (m) macro_write(inst, m, atoi(val));
     } else if (strncmp(key, "sram_part_", 10) == 0 && inst->mcu) {
         int partIdx = key[10] - '0';
         if (partIdx >= 0 && partIdx < 8 && key[11] == '_') {
@@ -2997,16 +3166,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 /* Get current value of mapped parameter */
                 const char *pkey = keys[idx];
                 if (strncmp(pkey, "macro_", 6) == 0) {
-                    /* Macro params: return offset value */
-                    const char *mn = pkey + 6;
-                    int val = 0;
-                    if (strcmp(mn, "cutoff") == 0) val = inst->macro_cutoff;
-                    else if (strcmp(mn, "resonance") == 0) val = inst->macro_resonance;
-                    else if (strcmp(mn, "attack") == 0) val = inst->macro_attack;
-                    else if (strcmp(mn, "decay") == 0) val = inst->macro_decay;
-                    else if (strcmp(mn, "release") == 0) val = inst->macro_release;
-                    else if (strcmp(mn, "tvf_env_depth") == 0) val = inst->macro_tvf_env_depth;
-                    return snprintf(buf, buf_len, "%d", val);
+                    /* Macro params: current display value (mode-dependent). */
+                    const macro_def_t *m = find_macro(pkey + 6);
+                    return snprintf(buf, buf_len, "%d", m ? macro_read(inst, m) : 0);
                 } else {
                     /* Forward to normal get_param for nvram/sram params */
                     return v2_get_param(instance, pkey, buf, buf_len);
@@ -3016,18 +3178,17 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return -1;
     }
 
-    /* Macro params: return current offset value */
+    /* Macro mode (A/B selector, readable). */
+    if (strcmp(key, "macro_mode") == 0) {
+        return snprintf(buf, buf_len, "%s",
+            inst->macro_mode == MACRO_RELATIVE_RESET ? "relative" : "absolute");
+    }
+
+    /* Macro params: current display value (mode-dependent, via the funnel). */
     if (strncmp(key, "macro_", 6) == 0) {
-        const char *macroName = key + 6;
-        int val = 0;
-        if (strcmp(macroName, "cutoff") == 0) val = inst->macro_cutoff;
-        else if (strcmp(macroName, "resonance") == 0) val = inst->macro_resonance;
-        else if (strcmp(macroName, "attack") == 0) val = inst->macro_attack;
-        else if (strcmp(macroName, "decay") == 0) val = inst->macro_decay;
-        else if (strcmp(macroName, "release") == 0) val = inst->macro_release;
-        else if (strcmp(macroName, "tvf_env_depth") == 0) val = inst->macro_tvf_env_depth;
-        else return -1;
-        return snprintf(buf, buf_len, "%d", val);
+        const macro_def_t *m = find_macro(key + 6);
+        if (!m) return -1;
+        return snprintf(buf, buf_len, "%d", macro_read(inst, m));
     }
 
     /* Fast path for sram_part_ params (performance mode editing) */
@@ -3175,15 +3336,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* State serialization for patch save/load */
     if (strcmp(key, "state") == 0) {
         int written = snprintf(buf, buf_len,
-            "{\"mode\":%d,\"preset\":%d,\"performance\":%d,\"part\":%d,\"octave_transpose\":%d,"
-            "\"expansion_index\":%d,\"expansion_bank_offset\":%d",
+            "{\"version\":2,\"mode\":%d,\"preset\":%d,\"performance\":%d,\"part\":%d,\"octave_transpose\":%d,"
+            "\"expansion_index\":%d,\"expansion_bank_offset\":%d,\"macro_mode\":%d",
             inst->performance_mode ? 1 : 0,
             inst->current_patch,
             inst->current_performance,
             inst->current_part,
             inst->octave_transpose,
             inst->current_expansion,
-            inst->expansion_bank_offset);
+            inst->expansion_bank_offset,
+            (int)inst->macro_mode);
 
         /* Include working patch data as hex if MCU is ready */
         if (inst->mcu && written < buf_len - 800) {
@@ -3641,19 +3803,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"performance\",\"name\":\"Performance\",\"type\":\"int\",\"min\":0,\"max\":47},"
             "{\"key\":\"part\",\"name\":\"Part\",\"type\":\"int\",\"min\":0,\"max\":7},"
             "{\"key\":\"octave_transpose\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-3,\"max\":3},"
-            /* Macro controls (offset all 4 tones simultaneously) */
-            "{\"key\":\"macro_cutoff\",\"name\":\"Cut\",\"type\":\"int\",\"min\":-64,\"max\":63},"
-            "{\"key\":\"macro_resonance\",\"name\":\"Res\",\"type\":\"int\",\"min\":-64,\"max\":63},"
-            "{\"key\":\"macro_attack\",\"name\":\"Atk\",\"type\":\"int\",\"min\":-64,\"max\":63},"
-            "{\"key\":\"macro_decay\",\"name\":\"Dcy\",\"type\":\"int\",\"min\":-64,\"max\":63},"
-            "{\"key\":\"macro_release\",\"name\":\"Rel\",\"type\":\"int\",\"min\":-64,\"max\":63},"
-            "{\"key\":\"macro_tvf_env_depth\",\"name\":\"FEv\",\"type\":\"int\",\"min\":-64,\"max\":63},"
+            /* Macro controls (absolute-anchored: display = anchor tone value,
+             * ranges match backing tone params; tvf_env_depth is signed). */
+            "{\"key\":\"macro_cutoff\",\"name\":\"Cutoff\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_resonance\",\"name\":\"Resonance\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_attack\",\"name\":\"Attack\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_decay\",\"name\":\"Decay\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_release\",\"name\":\"Release\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
+            "{\"key\":\"macro_tvf_env_depth\",\"name\":\"TVF Env\",\"type\":\"int\",\"min\":-63,\"max\":63,\"step\":1},"
             /* Patch common params */
             "{\"key\":\"nvram_patchCommon_patchlevel\",\"name\":\"Patch Level\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"nvram_patchCommon_patchpan\",\"name\":\"Patch Pan\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"nvram_patchCommon_reverblevel\",\"name\":\"Rev\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"nvram_patchCommon_reverblevel\",\"name\":\"Reverb\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
             "{\"key\":\"nvram_patchCommon_reverbtime\",\"name\":\"Reverb Time\",\"type\":\"int\",\"min\":0,\"max\":127},"
-            "{\"key\":\"nvram_patchCommon_choruslevel\",\"name\":\"Cho\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"nvram_patchCommon_choruslevel\",\"name\":\"Chorus\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
             "{\"key\":\"nvram_patchCommon_chorusdepth\",\"name\":\"Chorus Depth\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"nvram_patchCommon_chorusrate\",\"name\":\"Chorus Rate\",\"type\":\"int\",\"min\":0,\"max\":127},"
             "{\"key\":\"nvram_patchCommon_analogfeel\",\"name\":\"Analog Feel\",\"type\":\"int\",\"min\":0,\"max\":127},"
