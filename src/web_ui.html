@@ -52,6 +52,10 @@
   .fillrow{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:16px;align-items:start}
   .fillrow > *{min-width:0}
   .grid{display:grid;gap:10px 14px}
+  /* labeled sub-group inside a panel (e.g. Reverb / Chorus, Voice / Portamento) */
+  .grouplabel{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent2);
+    font-weight:700;margin:10px 0 4px}
+  .grouplabel:first-child{margin-top:0}
 
   /* ---- Control widget ------------------------------------------------- */
   .ctl{display:flex;flex-direction:column;gap:3px;min-width:96px}
@@ -118,7 +122,14 @@
   .env-node:active{cursor:grabbing}
   .env-line{fill:none;stroke:var(--accent2);stroke-width:2}
   .env-fill{fill:rgba(77,177,255,.10)}
-  @media (max-width:760px){ .sections{grid-template-columns:1fr} #tones{grid-template-columns:repeat(2,1fr)} }
+
+  /* ---- Control matrix (Mod / Aftertouch / Expression) ---------------- */
+  .matrixgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .mxcell{display:flex;flex-direction:column;gap:7px;background:#1b1e24;
+    border:1px solid var(--edge);border-radius:6px;padding:8px}
+  .mxcell .ctl{min-width:0;width:100%}
+
+  @media (max-width:760px){ .sections{grid-template-columns:1fr} #tones{grid-template-columns:repeat(2,1fr)} .matrixgrid{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>
 <body>
@@ -139,14 +150,19 @@
   </header>
 
   <main>
-    <section class="panel" id="masterPanel">
-      <h2>Patch Common</h2>
-      <div class="row" id="master"></div>
-    </section>
-
     <section class="panel" id="macros">
       <h2>Macros · offset all tones</h2>
       <div class="fillrow" id="macroRow"></div>
+    </section>
+
+    <section class="panel" id="controlPanel">
+      <h2>Common / Control</h2>
+      <div id="control"></div>
+    </section>
+
+    <section class="panel" id="fxPanel">
+      <h2>Effects</h2>
+      <div id="effects"></div>
     </section>
 
     <section>
@@ -220,13 +236,22 @@
   var TONE_RE = /^nvram_tone_(\d)_(.+)$/;
   var MACRO_KEYS = ["macro_cutoff","macro_resonance","macro_attack","macro_decay",
                     "macro_sustain","macro_release","macro_tvf_env_depth","macro_lfo_depth"];
-  var MASTER_ROW1 = ["nvram_patchCommon_patchlevel","nvram_patchCommon_patchpan",
-                     "nvram_patchCommon_reverblevel","nvram_patchCommon_reverbtime"];
-  var MASTER_ROW2 = ["nvram_patchCommon_analogfeel","nvram_patchCommon_choruslevel",
-                     "nvram_patchCommon_chorusdepth","nvram_patchCommon_chorusrate"];
+  // Common / Control panel — two labeled sub-rows.
+  var PC = "nvram_patchCommon_";
+  var CONTROL_VOICE = [PC+"patchlevel",PC+"patchpan",PC+"analogfeel",
+                       PC+"keyassign",PC+"sololegato",PC+"velocityswitch"];
+  var CONTROL_BEND  = [PC+"bendrangeup",PC+"bendrangedown",PC+"portamentoswitch",
+                       PC+"portamentomode",PC+"portamentotype",PC+"portamentotime"];
+  // Effects panel — reverb cluster + chorus cluster.
+  var FX_REVERB = [PC+"reverbtype",PC+"reverblevel",PC+"reverbtime",PC+"reverbfeedback"];
+  var FX_CHORUS = [PC+"chorustype",PC+"choruslevel",PC+"chorusdepth",
+                   PC+"chorusrate",PC+"chorusfeedback",PC+"chorusoutput"];
 
   // Which tone section a per-tone suffix belongs to.
   function toneSection(suffix){
+    if (/^mod(dest|sens)/.test(suffix)) return "Mod";
+    if (/^aft(dest|sens)/.test(suffix)) return "Aftertouch";
+    if (/^exp(dest|sens)/.test(suffix)) return "Expression";
     if (/^lfo1/.test(suffix)) return "LFO 1";
     if (/^lfo2/.test(suffix)) return "LFO 2";
     if (/^(penv|pitch|randompitch)/.test(suffix)) return "Pitch";
@@ -235,6 +260,9 @@
     if (/^(wave|fxm|toneswitch)/.test(suffix)) return "Wave";
     return "More";
   }
+  // The three control-matrix sections: each holds 4 slots (A–D), every slot a
+  // Dest enum + signed Sens. prefix = the suffix stem (mod/aft/exp).
+  var MATRIX_SECTIONS = {"Mod":"mod","Aftertouch":"aft","Expression":"exp"};
   // suffixes the envelope graph already covers — hidden from the numeric grid
   // (depth/velocity stay visible as plain controls).
   var ENV_TIME = {Pitch:["penvtime1","penvtime2","penvtime3","penvtime4"],
@@ -247,9 +275,12 @@
     return (ENV_TIME[sec]&&ENV_TIME[sec].indexOf(suffix)>=0) ||
            (ENV_LEVEL[sec]&&ENV_LEVEL[sec].indexOf(suffix)>=0);
   }
-  var SECTION_ORDER = ["Wave","Pitch","Filter","Amp","LFO 1","LFO 2","More"];
-  // Wave/Pitch/Filter/Amp span the full row; LFO 1 & LFO 2 pair up side by side.
-  var SECTION_FULL = {Wave:true, Pitch:true, Filter:true, Amp:true};
+  var SECTION_ORDER = ["Wave","Pitch","Filter","Amp","LFO 1","LFO 2",
+                       "Mod","Aftertouch","Expression","More"];
+  // Wave/Pitch/Filter/Amp + the 3 matrix sections span the full row;
+  // LFO 1 & LFO 2 pair up side by side.
+  var SECTION_FULL = {Wave:true, Pitch:true, Filter:true, Amp:true,
+                      Mod:true, Aftertouch:true, Expression:true};
 
   // ===================================================================
   // DOM helpers
@@ -257,6 +288,16 @@
   function el(tag, cls, txt){ var e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
   function num(x){ var n=parseFloat(x); return isNaN(n)?0:n; }
   function meta(key){ return state.params[key]; }
+
+  // Append a labeled sub-group (heading + a full-width fillrow of controls) to a
+  // panel body. Controls whose keys aren't present in chain_params are skipped.
+  function fillGroup(host, label, keys){
+    var any=false, row=el("div","fillrow");
+    keys.forEach(function(k){ var c=makeControl(k); if(c){ row.appendChild(c); any=true; } });
+    if (!any) return;
+    if (label) host.appendChild(el("div","grouplabel",label));
+    host.appendChild(row);
+  }
 
   // Build one control bound to a param key. Returns the DOM node (or null).
   function makeControl(key, labelOverride){
@@ -464,17 +505,19 @@
     var oct = makeControl("octave_transpose","Octave");
     if (oct) document.getElementById("octWrap").appendChild(oct);
 
-    // -- Master / patch common (two rows: reverb cluster up top, chorus below) --
-    var master = document.getElementById("master");
-    master.className = ""; master.id = "masterStack";
-    var r1=el("div","fillrow"), r2=el("div","fillrow");
-    MASTER_ROW1.forEach(function(k){ var c=makeControl(k); if(c) r1.appendChild(c); });
-    MASTER_ROW2.forEach(function(k){ var c=makeControl(k); if(c) r2.appendChild(c); });
-    master.appendChild(r1); master.appendChild(r2);
-
     // -- Macros (rendered as rotary knobs — they map to the device's knobs) --
     var mrow = document.getElementById("macroRow");
     MACRO_KEYS.forEach(function(k){ var c=makeKnob(k); if(c) mrow.appendChild(c); });
+
+    // -- Common / Control: voice + bend/portamento sub-groups --
+    var ctlHost = document.getElementById("control");
+    fillGroup(ctlHost, "Voice", CONTROL_VOICE);
+    fillGroup(ctlHost, "Bend / Portamento", CONTROL_BEND);
+
+    // -- Effects: reverb + chorus sub-groups --
+    var fxHost = document.getElementById("effects");
+    fillGroup(fxHost, "Reverb", FX_REVERB);
+    fillGroup(fxHost, "Chorus", FX_CHORUS);
 
     // -- Tone overview cards --
     buildToneCards();
@@ -548,6 +591,21 @@
     SECTION_ORDER.forEach(function(sec){
       var items=bySec[sec]; if(!items) return;
       var box=el("div","sec"+(SECTION_FULL[sec]?" full":"")); box.appendChild(el("h3",null,sec));
+
+      // Control matrix: 4 slots (A–D), each a Dest enum stacked over signed Sens.
+      if (MATRIX_SECTIONS[sec]){
+        var stem=MATRIX_SECTIONS[sec], mg=el("div","matrixgrid");
+        ["a","b","c","d"].forEach(function(L){
+          var cell=el("div","mxcell"), U=L.toUpperCase();
+          var d=makeControl(pre+stem+"dest"+L,"Dest "+U);
+          var s=makeControl(pre+stem+"sens"+L,"Sens "+U);
+          if(d) cell.appendChild(d);
+          if(s) cell.appendChild(s);
+          if(cell.childNodes.length) mg.appendChild(cell);
+        });
+        box.appendChild(mg); host.appendChild(box); return;
+      }
+
       var env=makeEnvelope(idx,sec);
       if (env){
         // Pitch/Filter/Amp: envelope on the left; sliders on the right in two
