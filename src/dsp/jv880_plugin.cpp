@@ -2193,8 +2193,24 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     memcpy(inst->midi_queue[write_idx], msg, len);
     inst->midi_queue_len[write_idx] = len;
 
-    /* Apply octave transpose to note on/off */
     uint8_t status = inst->midi_queue[write_idx][0] & 0xF0;
+
+    /* Poly -> channel aftertouch translation.
+     * The Move's pads emit polyphonic (per-note) aftertouch (0xA0 note pressure),
+     * but the JV-880 only responds to channel aftertouch (0xD0 pressure) for its
+     * AFT controller-matrix source — so pad pressure was being ignored. Rewrite
+     * each poly-AT message into a channel-AT message carrying the same pressure.
+     * Per-note pressure collapses to the latest note's value, which is correct
+     * for the JV's single channel-wide aftertouch source. */
+    if (status == 0xA0 && len >= 3) {
+        uint8_t ch = inst->midi_queue[write_idx][0] & 0x0F;
+        inst->midi_queue[write_idx][0] = 0xD0 | ch;
+        inst->midi_queue[write_idx][1] = inst->midi_queue[write_idx][2]; /* pressure */
+        inst->midi_queue_len[write_idx] = 2;
+        status = 0xD0;
+    }
+
+    /* Apply octave transpose to note on/off */
     if ((status == 0x90 || status == 0x80) && len >= 2) {
         int note = inst->midi_queue[write_idx][1] + (inst->octave_transpose * 12);
         if (note < 0) note = 0;
