@@ -97,6 +97,26 @@
   .tcard .mini{display:flex;flex-direction:column;gap:4px;margin-top:6px}
 
   /* ---- Tone editor ---------------------------------------------------- */
+  /* Link-tones (subtractive) toggle — a standout bar under the panel title */
+  .linktoggle{display:flex;align-items:center;gap:11px;cursor:pointer;user-select:none;
+    margin:0 0 12px;padding:9px 12px;border-radius:var(--r);
+    background:var(--panel2);border:1px solid var(--edge);transition:border-color .12s,background .12s}
+  .linktoggle:hover{border-color:var(--accent)}
+  .linktoggle.on{background:rgba(255,138,61,.10);border-color:var(--accent)}
+  .linktoggle .led{flex:none;width:16px;height:16px;border-radius:50%;background:var(--off);
+    border:1px solid #000;transition:background .1s}
+  .linktoggle.on .led{background:var(--accent);box-shadow:0 0 8px rgba(255,138,61,.7)}
+  .linktoggle .lt-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+  .linktoggle .lt-title{font-size:12.5px;font-weight:700;color:var(--ink);letter-spacing:.2px}
+  .linktoggle.on .lt-title{color:var(--accent)}
+  .linktoggle .lt-sub{font-size:10.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .linktoggle .lt-state{flex:none;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+    color:var(--dim);background:var(--bg);border:1px solid var(--edge);border-radius:20px;padding:3px 10px}
+  .linktoggle.on .lt-state{color:#16181d;background:var(--accent);border-color:var(--accent)}
+  /* "follows Tone 1" banner on slaved tones */
+  .linknote{grid-column:1 / -1;background:#1b1e24;border:1px dashed var(--edge);border-radius:var(--r);
+    padding:8px 10px;font-size:11px;color:var(--dim)}
+  .linknote b{color:var(--accent2);font-weight:700}
   .tabs{display:flex;gap:6px;margin-bottom:10px}
   .tab{flex:1;text-align:center;padding:7px;border:1px solid var(--edge);border-radius:6px;
     background:var(--panel2);cursor:pointer;font-weight:600}
@@ -171,6 +191,7 @@
 
     <section class="panel" id="tonePanel">
       <h2>Tone Editor</h2>
+      <div id="linkMount"></div>
       <div class="tabs" id="toneTabs"></div>
       <div class="sections" id="toneSections"></div>
     </section>
@@ -220,6 +241,7 @@
     order: [],         // bareKey[] in declared order
     values: {},        // bareKey -> string value
     activeTone: 0,
+    linkMode: false,   // subtractive link: Tone 1 drives shared params on all tones
     built: false
   };
   var controls = {};   // bareKey -> {update(val)} refresh hooks (many per key allowed)
@@ -263,6 +285,14 @@
   // The three control-matrix sections: each holds 4 slots (A–D), every slot a
   // Dest enum + signed Sens. prefix = the suffix stem (mod/aft/exp).
   var MATRIX_SECTIONS = {"Mod":"mod","Aftertouch":"aft","Expression":"exp"};
+
+  // Subtractive link mode: per-tone "oscillator" suffixes stay independent on
+  // every tone; everything else is shared and driven by Tone 1. Mirrors the
+  // device's v2_is_shared_tone_param so the UI hides exactly what the engine links.
+  var PER_TONE_SUFFIX = {wavegroup:1,wavenumber:1,fxmswitch:1,fxmdepth:1,toneswitch:1,
+    pitchcoarse:1,pitchfine:1,randompitchdepth:1,pitchkeyfollow:1,
+    level:1,pan:1,levelkeyfollow:1,panningkeyfollow:1};
+  function isSharedSuffix(suffix){ return !PER_TONE_SUFFIX[suffix]; }
   // suffixes the envelope graph already covers — hidden from the numeric grid
   // (depth/velocity stay visible as plain controls).
   var ENV_TIME = {Pitch:["penvtime1","penvtime2","penvtime3","penvtime4"],
@@ -539,7 +569,58 @@
         tabs.appendChild(b);
       })(t);
     }
+
+    // -- Link-tones (subtractive) toggle --
+    buildLinkToggle();
+
     selectTone(0);
+  }
+
+  // The subtractive-link toggle. Bound to the device's link_tones param: turning
+  // it on makes Tone 1 drive every shared param across all tones (the device
+  // snaps Tone 1 -> tones 2-4 and broadcasts subsequent edits). We mirror the
+  // device's auto-disable on patch change locally (see applyParamUpdate).
+  var linkSwEl = null, linkStateEl = null;
+  function buildLinkToggle(){
+    var mount = document.getElementById("linkMount"); if(!mount) return;
+    var t = el("label","linktoggle"); t.title =
+      "Subtractive mode: Tone 1 controls the filter, envelopes, LFOs & matrix on every tone. Each tone keeps its own wave, tuning and level/pan.";
+    t.appendChild(el("span","led"));
+    var txt = el("div","lt-text");
+    txt.appendChild(el("div","lt-title","Link Tones"));
+    txt.appendChild(el("div","lt-sub","Tone 1 drives filter, envelopes, LFOs & matrix on all tones"));
+    t.appendChild(txt);
+    linkStateEl = el("span","lt-state","Off"); t.appendChild(linkStateEl);
+    t.onclick = function(){ setLinkMode(!state.linkMode, true); };
+    mount.appendChild(t); linkSwEl = t;
+    onValue("link_tones", function(v){ setLinkMode(num(v)>=1, false); });
+    updateLinkToggle();
+  }
+  function updateLinkToggle(){
+    if(linkSwEl) linkSwEl.classList.toggle("on", state.linkMode);
+    if(linkStateEl) linkStateEl.textContent = state.linkMode ? "On" : "Off";
+  }
+
+  // Apply a link-mode change. fromUser=true means the user clicked (push to
+  // device + re-pull snapped values); otherwise it's reflecting a device push.
+  function setLinkMode(on, fromUser){
+    on = !!on;
+    if (state.linkMode === on){ updateLinkToggle(); return; }
+    state.linkMode = on;
+    updateLinkToggle();
+    if (fromUser) setParam("link_tones", on?1:0);
+    if (state.built) renderToneSections(state.activeTone);
+    // A user toggle changes many tone params at once on the device (enable snaps
+    // Tone 1 -> others; the slaved values are revealed again on disable), outside
+    // the normal per-edit echo. Re-sync from the device so the editor matches.
+    if (fromUser) setTimeout(resyncFromDevice, 200);
+  }
+
+  // Re-pull current device state (same mechanism as the ⟳ Sync button): the host
+  // re-pushes the full param set on every subscribe, which refreshes any values
+  // that changed device-side outside a UI edit (e.g. the link snap/broadcast).
+  function resyncFromDevice(){
+    try{ window.parent.postMessage({type:"subscribe"},"*"); }catch(e){}
   }
 
   function buildToneCards(){
@@ -589,10 +670,26 @@
   function renderToneSections(idx){
     var host=document.getElementById("toneSections"); host.innerHTML="";
     var pre="nvram_tone_"+idx+"_";
+    // In link mode, tones 2-4 are slaves: only their per-tone (oscillator) params
+    // are editable; the shared sections are hidden (they follow Tone 1).
+    var linkSlave = state.linkMode && idx>0;
+    if (linkSlave){
+      var note=el("div","linknote");
+      note.innerHTML = "Filter, envelopes, LFOs & control matrix follow <b>Tone 1</b>. "+
+                       "This tone keeps its own wave, tuning and level/pan.";
+      host.appendChild(note);
+    } else if (state.linkMode && idx===0){
+      var note0=el("div","linknote");
+      note0.innerHTML = "<b>Subtractive mode</b> — editing Tone 1's filter, envelopes, "+
+                        "LFOs & matrix drives all four tones.";
+      host.appendChild(note0);
+    }
     var bySec={};
     state.order.forEach(function(key){
       var m=key.match(TONE_RE); if(!m||+m[1]!==idx) return;
-      var suffix=m[2], sec=toneSection(suffix);
+      var suffix=m[2];
+      if (linkSlave && isSharedSuffix(suffix)) return;  // hidden on slave tones
+      var sec=toneSection(suffix);
       (bySec[sec]||(bySec[sec]=[])).push({key:key,suffix:suffix});
     });
     SECTION_ORDER.forEach(function(sec){
@@ -613,7 +710,10 @@
         box.appendChild(mg); host.appendChild(box); return;
       }
 
-      var env=makeEnvelope(idx,sec);
+      // Slave tones never show the shared envelope graphs (their time/level
+      // params belong to Tone 1); Pitch/Amp then fall through to a plain row of
+      // the remaining per-tone controls (tuning / level-pan).
+      var env = linkSlave ? null : makeEnvelope(idx,sec);
       if (env){
         // Pitch/Filter/Amp: envelope on the left; sliders on the right in two
         // columns. Envelope stages are paired Tn | Ln per row using the fixed
@@ -659,6 +759,7 @@
   function stepPreset(d){
     var idx=num(state.values["preset"]), cnt=num(state.values["preset_count"])||1;
     idx=(idx+d+cnt)%cnt; setParam("preset",idx); state.values["preset"]=String(idx); refreshPreset();
+    if (state.linkMode) setLinkMode(false, false);  // patch load auto-disables link
   }
   document.getElementById("pPrev").onclick=function(){ stepPreset(-1); };
   document.getElementById("pNext").onclick=function(){ stepPreset(1); };
@@ -689,13 +790,17 @@
 
   function applyParamUpdate(params){
     if (!params) return;
-    var touchedPreset=false;
+    var touchedPreset=false, patchChanged=false;
     Object.keys(params).forEach(function(fullKey){
       var key = fullKey.indexOf(PREFIX)===0 ? fullKey.slice(PREFIX.length) : fullKey;
       pushValue(key, params[fullKey]);
       if (key==="preset"||key==="preset_name"||key==="preset_count") touchedPreset=true;
+      if (key==="preset") patchChanged=true;
     });
     if (touchedPreset) refreshPreset();
+    // A patch load auto-disables link on the device (so the new patch arrives
+    // intact); reflect that here since the device doesn't push link_tones back.
+    if (patchChanged && state.linkMode) setLinkMode(false, false);
   }
 
   function setStatus(txt, cls){

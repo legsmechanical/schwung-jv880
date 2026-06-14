@@ -687,6 +687,10 @@ typedef struct {
     int macro_sustain;       /* offset for tvaenvlevel3 */
     int macro_lfo_depth;     /* offset for lfo1tvfdepth */
 
+    /* Subtractive link mode: when set, Tone 1 drives every shared (non-oscillator)
+     * param across all four tones. Transient editing mode — reset on patch change. */
+    int link_tones;
+
 #if JV880_PERF_STATS
     /* Per-window accumulators (reset every 15-second report window) */
     uint64_t perf_ns_emu;         /* Thread CPU ns spent in updateSC55 */
@@ -727,6 +731,8 @@ static void v2_select_performance(jv880_instance_t *inst, int perf_index);
 static void v2_set_mode(jv880_instance_t *inst, int performance_mode);
 static void v2_send_all_notes_off(jv880_instance_t *inst);
 static void v2_set_param(void *instance, const char *key, const char *val);
+static int v2_get_param(void *instance, const char *key, char *buf, int buf_len);
+static void v2_snap_link_tones(jv880_instance_t *inst);
 
 /* v2: Get file size helper */
 static uint32_t v2_get_file_size(const char *path) {
@@ -1189,6 +1195,11 @@ static void v2_select_patch(jv880_instance_t *inst, int global_index) {
     inst->macro_tvf_env_depth = 0;
     inst->macro_sustain = 0;
     inst->macro_lfo_depth = 0;
+
+    /* Subtractive link is an editing overlay on the live patch; a freshly loaded
+     * patch must arrive intact, so always drop link on patch change (decision:
+     * auto-disable, don't overwrite the new patch's per-tone data). */
+    inst->link_tones = 0;
 
     jv_debug("[v2_select_patch] Complete\n");
 }
@@ -2422,6 +2433,122 @@ static int json_get_number(const char *json, const char *key, float *out) {
 }
 
 /* v2: Set parameter - full expansion support */
+/* Subtractive link mode: which per-tone params stay independent (the
+ * "oscillator" — wave, tuning, output level/pan) vs. shared (filter, amp env,
+ * LFOs, pitch env, control matrix, sends) and driven by Tone 1. Anything not in
+ * the per-tone list is treated as shared, so new params default to shared. */
+static int v2_is_shared_tone_param(const char *name) {
+    static const char *PER_TONE[] = {
+        "wavegroup", "wavenumber", "fxmswitch", "fxmdepth", "toneswitch",
+        "pitchcoarse", "pitchfine", "randompitchdepth", "pitchkeyfollow",
+        "level", "pan", "levelkeyfollow", "panningkeyfollow"
+    };
+    for (size_t i = 0; i < sizeof(PER_TONE)/sizeof(PER_TONE[0]); i++)
+        if (strcmp(name, PER_TONE[i]) == 0) return 0;
+    return 1;
+}
+
+/* Write one tone param (NVRAM + DT1 SysEx) for a single tone. Extracted from the
+ * nvram_tone_* set branch so link mode can fan the same write across all 4 tones.
+ * Handles the per-tone control matrix and every ToneParamEntry type. */
+static void v2_write_one_tone_param(jv880_instance_t *inst, int toneIdx,
+                                    const char *paramName, const char *val) {
+    if (!inst || !inst->mcu || toneIdx < 0 || toneIdx > 3) return;
+    const int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
+
+    const MatrixParam *mx = find_matrix_param(paramName);
+    if (mx) {
+        uint8_t *mb = &inst->mcu->nvram[toneBase + mx->off];
+        if (mx->isSens) {
+            int sv = clamp_int(atoi(val), -63, 63);
+            *mb = (uint8_t)(int8_t)sv;
+            v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, sv + 64, 0);
+        } else {
+            int dv = clamp_int(atoi(val), 0, 12);
+            int dmask = ((1 << mx->width) - 1) << mx->shift;
+            *mb = (uint8_t)((*mb & ~dmask) | ((dv << mx->shift) & dmask));
+            v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, dv, 0);
+        }
+        return;
+    }
+
+    const ToneParamEntry *p = find_tone_param(paramName);
+    if (!p) return;
+    uint8_t *b = &inst->mcu->nvram[toneBase + p->nvram_offset];
+    int v, sysex_val;
+    switch (p->type) {
+        case TP_BYTE:
+            if (p->signed_param == 1) {
+                v = clamp_int(atoi(val), -63, 63);
+                *b = (uint8_t)(int8_t)v; sysex_val = v + 64;
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, sysex_val, p->two_byte);
+            } else if (p->signed_param == 2) {
+                v = clamp_int(atoi(val), -64, 63); sysex_val = v + 64;
+                *b = (uint8_t)sysex_val;
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, sysex_val, p->two_byte);
+            } else {
+                v = clamp_int(atoi(val), 0, 127); *b = (uint8_t)v;
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+            }
+            return;
+        case TP_BITFIELD:
+            v = clamp_int(atoi(val), 0, p->bit_mask);
+            *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
+            if (strcmp(paramName, "fxmdepth") == 0 && v > 0)
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v - 1, p->two_byte);
+            else
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+            return;
+        case TP_BOOL:
+            v = (strcmp(val, "On") == 0 || atoi(val)) ? 1 : 0;
+            if (v) *b |= (1 << p->bit_shift); else *b &= ~(1 << p->bit_shift);
+            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+            return;
+        case TP_ENUM:
+            if (strcmp(paramName, "filtermode") == 0) {
+                if (strcmp(val, "Off") == 0) v = 0;
+                else if (strcmp(val, "LPF") == 0) v = 1;
+                else if (strcmp(val, "HPF") == 0) v = 2;
+                else v = clamp_int(atoi(val), 0, 2);
+                *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+                return;
+            }
+            if (strcmp(paramName, "resonancemode") == 0) {
+                v = (strcmp(val, "Hard") == 0 || atoi(val)) ? 1 : 0;
+                if (v) *b |= 0x80; else *b &= ~0x80;
+                v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+                return;
+            }
+            v = clamp_int(atoi(val), 0, p->bit_mask);
+            *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
+            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
+            return;
+    }
+}
+
+/* Snap: copy every shared tone param from Tone 1 (idx 0) to tones 2-4 so the
+ * four tones immediately share one filter/amp/LFO/matrix shape. Round-trips each
+ * value as a string through get/write (all shared params read back as plain
+ * numerics that the writer accepts), so it stays correct across param types. */
+static void v2_snap_link_tones(jv880_instance_t *inst) {
+    if (!inst || !inst->mcu) return;
+    char k[48], tmp[48];
+    for (size_t i = 0; i < NUM_TONE_PARAMS; i++) {
+        const char *nm = TONE_PARAMS[i].name;
+        if (!v2_is_shared_tone_param(nm)) continue;
+        snprintf(k, sizeof(k), "nvram_tone_0_%s", nm);
+        if (v2_get_param(inst, k, tmp, sizeof(tmp)) <= 0) continue;
+        for (int t = 1; t < 4; t++) v2_write_one_tone_param(inst, t, nm, tmp);
+    }
+    for (size_t i = 0; i < NUM_MATRIX_PARAMS; i++) {
+        const char *nm = MATRIX_PARAMS[i].name;  /* all matrix params are shared */
+        snprintf(k, sizeof(k), "nvram_tone_0_%s", nm);
+        if (v2_get_param(inst, k, tmp, sizeof(tmp)) <= 0) continue;
+        for (int t = 1; t < 4; t++) v2_write_one_tone_param(inst, t, nm, tmp);
+    }
+}
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     jv880_instance_t *inst = (jv880_instance_t*)instance;
     if (!inst) return;
@@ -2640,101 +2767,26 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             v2_queue_patch_common_sysex(inst, pc->sysexIdx, v);
         }
     } else if (strncmp(key, "nvram_tone_", 11) == 0 && inst->mcu) {
-        /* Optimized tone param set using binary search lookup */
         int toneIdx = atoi(key + 11);
         const char *underscore = strchr(key + 11, '_');
         if (underscore && toneIdx >= 0 && toneIdx < 4) {
             const char *paramName = underscore + 1;
-            const int toneBase = NVRAM_PATCH_OFFSET + 26 + (toneIdx * 84);
-
-            /* Per-tone control matrix (dest nibble / signed sensitivity). */
-            const MatrixParam *mx = find_matrix_param(paramName);
-            if (mx) {
-                uint8_t *mb = &inst->mcu->nvram[toneBase + mx->off];
-                if (mx->isSens) {
-                    int sv = clamp_int(atoi(val), -63, 63);
-                    *mb = (uint8_t)(int8_t)sv;
-                    v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, sv + 64, 0);
-                } else {
-                    int dv = clamp_int(atoi(val), 0, 12);
-                    int dmask = ((1 << mx->width) - 1) << mx->shift;
-                    *mb = (uint8_t)((*mb & ~dmask) | ((dv << mx->shift) & dmask));
-                    v2_queue_tone_sysex(inst, toneIdx, mx->sysexIdx, dv, 0);
-                }
-                return;
-            }
-
-            const ToneParamEntry *p = find_tone_param(paramName);
-            if (p) {
-                uint8_t *b = &inst->mcu->nvram[toneBase + p->nvram_offset];
-                int v;
-                int sysex_val;
-
-                switch (p->type) {
-                    case TP_BYTE:
-                        if (p->signed_param == 1) {
-                            /* Signed param: accept negative values, add 64 for SysEx */
-                            v = clamp_int(atoi(val), -63, 63);
-                            *b = (uint8_t)(int8_t)v;  /* Store as signed byte */
-                            sysex_val = v + 64;      /* Add offset for SysEx */
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, sysex_val, p->two_byte);
-                        } else if (p->signed_param == 2) {
-                            /* Pan special case: stored with +64 offset */
-                            v = clamp_int(atoi(val), -64, 63);
-                            sysex_val = v + 64;      /* -64 to +63 becomes 0 to 127 */
-                            *b = (uint8_t)sysex_val; /* Store with offset */
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, sysex_val, p->two_byte);
-                        } else {
-                            /* Unsigned param */
-                            v = clamp_int(atoi(val), 0, 127);
-                            *b = (uint8_t)v;
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                        }
-                        return;
-
-                    case TP_BITFIELD:
-                        v = clamp_int(atoi(val), 0, p->bit_mask);
-                        *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
-                        /* FXM depth special case: SysEx wants value-1 (1-16 becomes 0-15) */
-                        if (strcmp(paramName, "fxmdepth") == 0 && v > 0) {
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v - 1, p->two_byte);
-                        } else {
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                        }
-                        return;
-
-                    case TP_BOOL:
-                        v = (strcmp(val, "On") == 0 || atoi(val)) ? 1 : 0;
-                        if (v) *b |= (1 << p->bit_shift);
-                        else *b &= ~(1 << p->bit_shift);
-                        v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                        return;
-
-                    case TP_ENUM:
-                        /* Special handling for specific enums */
-                        if (strcmp(paramName, "filtermode") == 0) {
-                            if (strcmp(val, "Off") == 0) v = 0;
-                            else if (strcmp(val, "LPF") == 0) v = 1;
-                            else if (strcmp(val, "HPF") == 0) v = 2;
-                            else v = clamp_int(atoi(val), 0, 2);
-                            *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                            return;
-                        }
-                        if (strcmp(paramName, "resonancemode") == 0) {
-                            v = (strcmp(val, "Hard") == 0 || atoi(val)) ? 1 : 0;
-                            if (v) *b |= 0x80; else *b &= ~0x80;
-                            v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                            return;
-                        }
-                        /* Default enum handling */
-                        v = clamp_int(atoi(val), 0, p->bit_mask);
-                        *b = (*b & ~(p->bit_mask << p->bit_shift)) | ((v & p->bit_mask) << p->bit_shift);
-                        v2_queue_tone_sysex(inst, toneIdx, p->sysex_idx, v, p->two_byte);
-                        return;
-                }
+            if (inst->link_tones && v2_is_shared_tone_param(paramName)) {
+                /* Subtractive link: a shared param drives all four tones at once
+                 * (Tone 1 is the master, but editing any tone's shared control
+                 * fans out identically since the tones are kept equal). */
+                for (int t = 0; t < 4; t++) v2_write_one_tone_param(inst, t, paramName, val);
+            } else {
+                v2_write_one_tone_param(inst, toneIdx, paramName, val);
             }
         }
+    } else if (strcmp(key, "link_tones") == 0) {
+        /* Subtractive mode toggle. On enable, snap Tone 1's shared params onto
+         * tones 2-4 so they immediately behave as one voice. */
+        int on = (strcmp(val, "On") == 0 || atoi(val)) ? 1 : 0;
+        int was = inst->link_tones;
+        inst->link_tones = on;
+        if (on && !was) v2_snap_link_tones(inst);
     } else if (strcmp(key, "macro_mode") == 0) {
         /* Runtime A/B switch for macro semantics (not surfaced in UI). */
         if (strcmp(val, "relative") == 0 || strcmp(val, "MACRO_RELATIVE_RESET") == 0) {
@@ -3459,11 +3511,14 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "octave_transpose") == 0) {
         return snprintf(buf, buf_len, "%d", inst->octave_transpose);
     }
+    if (strcmp(key, "link_tones") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->link_tones);
+    }
     /* State serialization for patch save/load */
     if (strcmp(key, "state") == 0) {
         int written = snprintf(buf, buf_len,
             "{\"version\":2,\"mode\":%d,\"preset\":%d,\"performance\":%d,\"part\":%d,\"octave_transpose\":%d,"
-            "\"expansion_index\":%d,\"expansion_bank_offset\":%d,\"macro_mode\":%d",
+            "\"expansion_index\":%d,\"expansion_bank_offset\":%d,\"macro_mode\":%d,\"link_tones\":%d",
             inst->performance_mode ? 1 : 0,
             inst->current_patch,
             inst->current_performance,
@@ -3471,7 +3526,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             inst->octave_transpose,
             inst->current_expansion,
             inst->expansion_bank_offset,
-            (int)inst->macro_mode);
+            (int)inst->macro_mode,
+            inst->link_tones);
 
         /* Include working patch data as hex if MCU is ready */
         if (inst->mcu && written < buf_len - 800) {
@@ -4052,7 +4108,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         "{\"level\":\"tone1\",\"label\":\"Tone 1\"},"
                         "{\"level\":\"tone2\",\"label\":\"Tone 2\"},"
                         "{\"level\":\"tone3\",\"label\":\"Tone 3\"},"
-                        "{\"level\":\"tone4\",\"label\":\"Tone 4\"}"
+                        "{\"level\":\"tone4\",\"label\":\"Tone 4\"},"
+                        "{\"key\":\"link_tones\",\"label\":\"Link all to 1\"}"
                     "]"
                 "},");
 
@@ -4309,6 +4366,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             "{\"key\":\"performance\",\"name\":\"Performance\",\"type\":\"int\",\"min\":0,\"max\":47},"
             "{\"key\":\"part\",\"name\":\"Part\",\"type\":\"int\",\"min\":0,\"max\":7},"
             "{\"key\":\"octave_transpose\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-3,\"max\":3},"
+            "{\"key\":\"link_tones\",\"name\":\"Link all to 1\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
             /* Macro controls (absolute-anchored: display = anchor tone value,
              * ranges match backing tone params; tvf_env_depth is signed). */
             "{\"key\":\"macro_cutoff\",\"name\":\"Cutoff\",\"type\":\"int\",\"min\":0,\"max\":127,\"step\":1},"
