@@ -400,7 +400,6 @@
     var lm = levels.length?meta(levels[0]):null;
     var LMIN = lm?num(lm.min):0, LMAX = lm?num(lm.max):127;
     var TMAX = num((meta(times[0])||{}).max||127);
-    var hasFinalZero = (section==="Amp"); // amp env decays to 0 after last stage
 
     var W=560, H=96, padL=6, padR=6, padT=10, padB=12;
     var ix0=padL, ix1=W-padR, iy0=padT, iy1=H-padB;
@@ -420,17 +419,25 @@
     function levOf(i){ return levels[i]?num(state.values[levels[i]]||0):0; }
     function timeOf(i){ return num(state.values[times[i]]||0); }
     function L2Y(v){ return iy1 - ((v-LMIN)/(LMAX-LMIN))*(iy1-iy0); }
+    // Absolute time->x mapping: each stage owns a fixed slice of the width (up to
+    // TMAX), so a node's screen position depends only on the cumulative time up to
+    // it — never on the live total. This keeps a dragged node tracking the cursor
+    // 1:1 and shifts later nodes rigidly, instead of the springy normalize-by-total
+    // behavior that made nodes snap to the next point or to the far edge.
+    var FULLT = Math.max(1, times.length) * TMAX;
     function geom(){
-      // cumulative time -> x; total includes optional final-zero segment
-      var segs=stages + (hasFinalZero?1:0);
-      var totalT=0, i; for(i=0;i<stages;i++) totalT+=timeOf(i);
-      if(hasFinalZero) totalT+=timeOf(stages-1)*0; // final uses last time visually
-      var span=ix1-ix0, n=segs; // distribute by time, min slice so points stay grabbable
-      var pts=[{x:ix0,y:L2Y(LMIN<0?0:0)}]; // start
-      var acc=0, denom = totalT>0?totalT:segs;
-      for(i=0;i<stages;i++){ acc+=timeOf(i); var x=ix0+span*(totalT>0?acc/denom:(i+1)/segs); pts.push({x:x,y:L2Y(levOf(i))}); }
-      if(hasFinalZero){ pts.push({x:ix1,y:L2Y(0)}); }
-      else { pts[pts.length-1].x = ix1; }
+      var span=ix1-ix0;
+      var pts=[{x:ix0,y:L2Y(LMIN<0?0:0)}], acc=0, i; // start at level 0
+      for(i=0;i<stages;i++){
+        acc+=timeOf(i);
+        pts.push({x:ix0+span*Math.min(1,acc/FULLT), y:L2Y(levOf(i))});
+      }
+      // Hold tail: after the final stage the envelope holds at its last level
+      // (pitch/filter sustain; amp rests at 0), so extend the line+fill flat to
+      // the right edge instead of leaving the graph dangling mid-canvas. The tail
+      // carries no breakpoint dot — only the real nodes (pts[1..stages]) do.
+      var lastP=pts[pts.length-1];
+      if (lastP.x < ix1) pts.push({x:ix1, y:lastP.y});
       return pts;
     }
     function redraw(){
@@ -468,7 +475,7 @@
           }
           // horizontal drag -> this stage's time (delta mapped over full width)
           if(times[i]){
-            var dt = Math.round((vbX(ev)-startX)/(ix1-ix0)*TMAX);
+            var dt = Math.round((vbX(ev)-startX)/(ix1-ix0)*FULLT);
             var tv = Math.max(0, Math.min(TMAX, startT+dt));
             setParam(times[i],tv); pushLocal(times[i],tv);
           }
