@@ -814,12 +814,14 @@
   async function boot(){
     setStatus("connecting…","");
     remote.onParamChange(applyParamUpdate);   // subscribe + receive live pushes
-    // Retry getChainParams a few times — chain_params arrive from the device
-    // asynchronously and the iframe can boot before they land.
+    // chain_params arrives from the host on subscribe (the host sends it before
+    // slot settings), so the first ask usually succeeds and we render at once.
+    // If it's slightly late, poll on a short interval so a miss costs ~100ms
+    // rather than 600ms — keeps first paint fast without a fixed long wait.
     var cp=null;
-    for (var attempt=0; attempt<6 && !cp; attempt++){
+    for (var attempt=0; attempt<40 && !cp; attempt++){
       cp = await remote.getChainParams();
-      if (!cp) await new Promise(function(r){setTimeout(r,600);});
+      if (!cp) await new Promise(function(r){setTimeout(r,100);});
     }
     if (!cp){ setStatus("no module in slot","err"); return; }
     ingestChainParams(cp);
